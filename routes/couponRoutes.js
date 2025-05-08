@@ -75,6 +75,7 @@ router.get("/get-coupons", async (req, res) => {
 
 // READ SINGLE COUPON
 router.get("/get-coupon/:id", async (req, res) => {
+
   try {
     const { id } = req.params;
     const coupons = await Coupon.findById(id);
@@ -88,8 +89,7 @@ router.get("/get-coupon/:id", async (req, res) => {
     console.error("Error fetching coupon:", error);
     res.status(500).json({ message: "Server Error" });
   }
-});
-
+})
 // GET coupons by store name
 router.get("/get-coupons-by-store/:storeName", async (req, res) => {
   try {
@@ -127,6 +127,7 @@ router.get("/get-coupons-by-category/:category", async (req, res) => {
     res.status(500).json({ message: "Server Error" });
   }
 });
+
 
 
 // PUT: Update coupon by ID
