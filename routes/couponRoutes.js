@@ -74,6 +74,25 @@ router.get("/get-coupons", async (req, res) => {
   }
 });
 
+// READ SINGLE COUPON
+router.get("/get-coupon/:id", async (req, res) => {
+  
+  
+  try {
+    const { id } = req.params;
+    const coupons = await Coupon.findById(id);
+
+    if (!coupons) {
+      return res.status(404).json({ message: "Coupon not found" });
+    }
+
+    res.status(200).json(coupons);
+  } catch (error) {
+    console.error("Error fetching coupon:", error);
+    res.status(500).json({ message: "Server Error" });
+  }
+});
+
 // PUT: Update coupon by ID
 router.put(
     "/update-coupon/:id",
