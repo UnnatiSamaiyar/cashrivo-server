@@ -1,9 +1,8 @@
 const express = require("express");
 const router = express.Router();
 const Coupon = require("../models/Coupon");
-const getMulterUploader = require("../middleware/upload"); 
+const getMulterUploader = require("../middleware/upload");
 const fs = require("fs");
-
 
 const upload = getMulterUploader("uploads/coupons");
 
@@ -76,8 +75,6 @@ router.get("/get-coupons", async (req, res) => {
 
 // READ SINGLE COUPON
 router.get("/get-coupon/:id", async (req, res) => {
-  
-  
   try {
     const { id } = req.params;
     const coupons = await Coupon.findById(id);
@@ -93,64 +90,105 @@ router.get("/get-coupon/:id", async (req, res) => {
   }
 });
 
+// GET coupons by store name
+router.get("/get-coupons-by-store/:storeName", async (req, res) => {
+  try {
+    const { storeName } = req.params;
+    const coupons = await Coupon.find({
+      storeName: { $regex: new RegExp(`^${storeName}$`, "i") }, // case-insensitive exact match
+    });
+
+    if (!coupons.length) {
+      return res.status(404).json({ message: "No coupons found for this store" });
+    }
+
+    res.status(200).json(coupons);
+  } catch (error) {
+    console.error("Error fetching store coupons:", error);
+    res.status(500).json({ message: "Server Error" });
+  }
+});
+
+// GET coupons by category name
+router.get("/get-coupons-by-category/:category", async (req, res) => {
+  try {
+    const { category } = req.params;
+    const coupons = await Coupon.find({
+      category: { $regex: new RegExp(`^${category}$`, "i") }, // case-insensitive exact match
+    });
+
+    if (!coupons.length) {
+      return res.status(404).json({ message: "No coupons found for this store" });
+    }
+
+    res.status(200).json(coupons);
+  } catch (error) {
+    console.error("Error fetching store coupons:", error);
+    res.status(500).json({ message: "Server Error" });
+  }
+});
+
+
 // PUT: Update coupon by ID
 router.put(
-    "/update-coupon/:id",
-    upload.fields([
-      { name: "image", maxCount: 1 },
-      { name: "storeLogo", maxCount: 1 },
-    ]),
-    async (req, res) => {
-      try {
-        const couponId = req.params.id;
-        const updates = req.body;
-  
-        // Handle optional file updates
-        if (req.files["image"]) {
-          updates.image = req.files["image"][0].filename;
-        }
-  
-        if (req.files["storeLogo"]) {
-          updates.storeLogo = req.files["storeLogo"][0].filename;
-        }
-  
-        const updatedCoupon = await Coupon.findByIdAndUpdate(
-          couponId,
-          { $set: updates },
-          { new: true }
-        );
-  
-        if (!updatedCoupon) {
-          return res.status(404).json({ error: "Coupon not found" });
-        }
-  
-        res.status(200).json({ message: "Coupon updated successfully", updatedCoupon });
-      } catch (error) {
-        console.error("Coupon UPDATE failed:", error.message);
-        res.status(500).json({ error: "Failed to update coupon" });
-      }
-    }
-  );
-// DELETE: Delete coupon by ID
-router.delete("/delete-coupon/:id", async (req, res) => {
+  "/update-coupon/:id",
+  upload.fields([
+    { name: "image", maxCount: 1 },
+    { name: "storeLogo", maxCount: 1 },
+  ]),
+  async (req, res) => {
     try {
       const couponId = req.params.id;
-      const deletedCoupon = await Coupon.findByIdAndDelete(couponId);
-  
-      if (!deletedCoupon) {
+      const updates = req.body;
+
+      // Handle optional file updates
+      if (req.files["image"]) {
+        updates.image = req.files["image"][0].filename;
+      }
+
+      if (req.files["storeLogo"]) {
+        updates.storeLogo = req.files["storeLogo"][0].filename;
+      }
+
+      const updatedCoupon = await Coupon.findByIdAndUpdate(
+        couponId,
+        { $set: updates },
+        { new: true }
+      );
+
+      if (!updatedCoupon) {
         return res.status(404).json({ error: "Coupon not found" });
       }
-  
-     
-      if (deletedCoupon.image) fs.unlinkSync(`uploads/coupons/${deletedCoupon.image}`);
-      if (deletedCoupon.storeLogo) fs.unlinkSync(`uploads/coupons/${deletedCoupon.storeLogo}`);
-  
-      res.status(200).json({ message: "Coupon deleted successfully" });
+
+      res
+        .status(200)
+        .json({ message: "Coupon updated successfully", updatedCoupon });
     } catch (error) {
-      console.error("Coupon DELETE failed:", error.message);
-      res.status(500).json({ error: "Failed to delete coupon" });
+      console.error("Coupon UPDATE failed:", error.message);
+      res.status(500).json({ error: "Failed to update coupon" });
     }
-  });
-    
+  }
+);
+// DELETE: Delete coupon by ID
+router.delete("/delete-coupon/:id", async (req, res) => {
+  try {
+    const couponId = req.params.id;
+    const deletedCoupon = await Coupon.findByIdAndDelete(couponId);
+
+    if (!deletedCoupon) {
+      return res.status(404).json({ error: "Coupon not found" });
+    }
+
+    if (deletedCoupon.image)
+      fs.unlinkSync(`uploads/coupons/${deletedCoupon.image}`);
+    if (deletedCoupon.storeLogo)
+      fs.unlinkSync(`uploads/coupons/${deletedCoupon.storeLogo}`);
+
+    res.status(200).json({ message: "Coupon deleted successfully" });
+  } catch (error) {
+    console.error("Coupon DELETE failed:", error.message);
+    res.status(500).json({ error: "Failed to delete coupon" });
+  }
+});
 
 module.exports = router;
