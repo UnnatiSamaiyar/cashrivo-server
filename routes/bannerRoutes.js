@@ -10,10 +10,10 @@ const upload = getMulterUploader('uploads/banners');
 // CREATE
 router.post('/upload-banner', upload.single('image'), async (req, res) => {
   try {
-    const { title, altText, link } = req.body;
+    const { title, altText, link, code } = req.body;
     const imageUrl = `/uploads/banners/${req.file.filename}`;
 
-    const banner = new Banner({ title, altText, link, imageUrl });
+    const banner = new Banner({ title, altText, link, code, imageUrl });
     await banner.save();
 
     res.status(201).json({ message: 'Banner uploaded successfully', banner });
@@ -35,21 +35,22 @@ router.get("/get-banners", async (req, res) => {
 // UPDATE
 router.put("/update-banner/:id", upload.single("image"), async (req, res) => {
   try {
-    const { title, altText, link } = req.body;
+    const { title, altText, link, code } = req.body;
     const banner = await Banner.findById(req.params.id);
 
     if (!banner) return res.status(404).json({ message: "Banner not found" });
 
     // Delete old image if new one uploaded
     if (req.file && banner.imageUrl) {
-      const oldPath = path.join(__dirname, "..", "uploads", "banners", banner.imageUrl);
+      const oldPath = path.join(__dirname, "..", "uploads", "banners", path.basename(banner.imageUrl));
       if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
     }
 
     banner.title = title || banner.title;
     banner.altText = altText || banner.altText;
     banner.link = link || banner.link;
-    if (req.file) banner.imageUrl = req.file.filename;
+    banner.code = code || banner.code;
+    if (req.file) banner.imageUrl = `/uploads/banners/${req.file.filename}`;
 
     await banner.save();
 
@@ -66,7 +67,7 @@ router.delete("/delete-banner/:id", async (req, res) => {
     if (!banner) return res.status(404).json({ message: "Banner not found" });
 
     // Delete image from filesystem
-    const imagePath = path.join(__dirname, "..", "uploads", "banners", banner.imageUrl);
+    const imagePath = path.join(__dirname, "..", "uploads", "banners", path.basename(banner.imageUrl));
     if (fs.existsSync(imagePath)) fs.unlinkSync(imagePath);
 
     await Banner.findByIdAndDelete(req.params.id);

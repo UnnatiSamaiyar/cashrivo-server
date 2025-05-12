@@ -14,6 +14,7 @@ const vcommissionRoutes = require("./routes/vcommission");
 const affiliatebanner = require("./routes/bannerRoutes");
 const couponRoutes = require("./routes/couponRoutes");
 const blogsRoutes = require("./routes/blogRoutes");
+const impactRoute = require('./routes/impactRoutes')
 
 const app = express();
 
@@ -32,6 +33,7 @@ app.use("/api", vcommissionRoutes);
 app.use("/api", affiliatebanner);
 app.use("/api", couponRoutes);
 app.use("/api", blogsRoutes);
+app.use("/api", impactRoute)
 
 mongoose
   .connect(process.env.MONGO_URI, {
