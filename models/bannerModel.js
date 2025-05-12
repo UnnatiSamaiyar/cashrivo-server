@@ -5,6 +5,7 @@ const bannerSchema = new mongoose.Schema({
   altText: String,
   link: String,
   imageUrl: String, // this will store the filename or full path
+  code: String,     // optional field
 }, { timestamps: true });
 
 module.exports = mongoose.model('Banner', bannerSchema);

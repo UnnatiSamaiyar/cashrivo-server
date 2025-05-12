@@ -25,10 +25,10 @@ const getMulterUploader = (folderName = 'uploads') => {
 
   const fileFilter = (req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
-    if (['.jpg', '.jpeg', '.png', '.webp'].includes(ext)) {
+    if (['.jpg', '.jpeg', '.png', '.webp', '.gif'].includes(ext)) {
       cb(null, true);
     } else {
-      cb(new Error('Only image files are allowed (.jpg, .jpeg, .png, .webp)'));
+      cb(new Error('Only image files are allowed (.jpg, .jpeg, .png, .webp, .gif)'));
     }
   };
 
