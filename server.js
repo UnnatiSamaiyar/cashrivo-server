@@ -16,6 +16,7 @@ const affiliatebanner = require("./routes/bannerRoutes");
 const couponRoutes = require("./routes/couponRoutes");
 const blogsRoutes = require("./routes/blogRoutes");
 const impactRoute = require('./routes/impactRoutes');
+const previewImagesRoute = require('./utils/previewImages')
 
 require('./cron/fetchScheduler');
 
@@ -52,7 +53,8 @@ app.use("/api", vcommissionRoutes);
 app.use("/api", affiliatebanner);
 app.use("/api", couponRoutes);
 app.use("/api", blogsRoutes);
-app.use("/api", impactRoute)
+app.use("/api", impactRoute);
+app.use('/preview-images', previewImagesRoute);
 
 mongoose
   .connect(process.env.MONGO_URI, {
