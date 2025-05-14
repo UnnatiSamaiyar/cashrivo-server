@@ -4,7 +4,7 @@ const axios = require('axios');
 
 
 router.get("/vcommission", async (req, res) => {
-  const apiKey = process.env.VCOMMISSION_API || "68109215875cf93f32c67ac24f36810921587600";
+  const apiKey = process.env.VCOMMISSION_API || "67efa8eeb7e01645099c665b9ae67efa8eeb7e35";
   
   const url = `https://api.vcommission.com/v2/publisher/campaigns?apiKey=${apiKey}`;
 

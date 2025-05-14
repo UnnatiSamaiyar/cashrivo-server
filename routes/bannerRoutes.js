@@ -10,10 +10,18 @@ const upload = getMulterUploader('uploads/banners');
 // CREATE
 router.post('/upload-banner', upload.single('image'), async (req, res) => {
   try {
-    const { title, altText, link, code } = req.body;
+    const { title, altText, link, code, order } = req.body;
     const imageUrl = `/uploads/banners/${req.file.filename}`;
 
-    const banner = new Banner({ title, altText, link, code, imageUrl });
+    let newOrder;
+    if (order !== undefined) {
+      newOrder = parseInt(order);
+    } else {
+      const maxOrderBanner = await Banner.findOne().sort({ order: -1 });
+      newOrder = maxOrderBanner ? maxOrderBanner.order + 1 : 1;
+    }
+
+    const banner = new Banner({ title, altText, link, code, imageUrl, order: newOrder });
     await banner.save();
 
     res.status(201).json({ message: 'Banner uploaded successfully', banner });
@@ -23,19 +31,21 @@ router.post('/upload-banner', upload.single('image'), async (req, res) => {
 });
 
 // READ
+// In bannerRoutes.js (or similar)
 router.get("/get-banners", async (req, res) => {
   try {
-    const banners = await Banner.find();
+    const banners = await Banner.find().sort({ order: 1 }); // ascending order
     res.status(200).json(banners);
   } catch (error) {
     res.status(500).json({ message: "Server Error" });
   }
 });
 
+
 // UPDATE
 router.put("/update-banner/:id", upload.single("image"), async (req, res) => {
   try {
-    const { title, altText, link, code } = req.body;
+    const { title, altText, link, code, order } = req.body;
     const banner = await Banner.findById(req.params.id);
 
     if (!banner) return res.status(404).json({ message: "Banner not found" });
@@ -51,6 +61,7 @@ router.put("/update-banner/:id", upload.single("image"), async (req, res) => {
     banner.link = link || banner.link;
     banner.code = code || banner.code;
     if (req.file) banner.imageUrl = `/uploads/banners/${req.file.filename}`;
+    if (order !== undefined) banner.order = parseInt(order);
 
     await banner.save();
 
