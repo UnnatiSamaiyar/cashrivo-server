@@ -3,7 +3,6 @@ const router = express.Router();
 const Coupon = require("../models/Coupon");
 const getMulterUploader = require("../middleware/upload");
 const fs = require("fs");
-
 const upload = getMulterUploader("uploads/coupons");
 
 // POST coupon
@@ -63,15 +62,15 @@ router.post(
   }
 );
 
-router.get("/get-coupons", async (req, res) => {
-  try {
-    const coupons = await Coupon.find();
-    res.status(200).json(coupons);
-  } catch (error) {
-    console.log(error);
-    res.status(500).json({ message: "Server Error" });
-  }
-});
+// router.get("/get-coupons", async (req, res) => {
+//   try {
+//     const coupons = await Coupon.find();
+//     res.status(200).json(coupons);
+//   } catch (error) {
+//     console.log(error);
+//     res.status(500).json({ message: "Server Error" });
+//   }
+// });
 
 // READ SINGLE COUPON
 router.get("/get-coupon/:id", async (req, res) => {
@@ -191,5 +190,8 @@ router.delete("/delete-coupon/:id", async (req, res) => {
     res.status(500).json({ error: "Failed to delete coupon" });
   }
 });
+
+
+
 
 module.exports = router;
