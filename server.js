@@ -16,7 +16,8 @@ const affiliatebanner = require("./routes/bannerRoutes");
 const couponRoutes = require("./routes/couponRoutes");
 const blogsRoutes = require("./routes/blogRoutes");
 const impactRoute = require('./routes/impactRoutes');
-const previewImagesRoute = require('./utils/previewImages')
+const previewImagesRoute = require('./utils/previewImages');
+const csvcouponRoute = require('./routes/csvcouponRoute');
 
 require('./cron/fetchScheduler');
 
@@ -55,6 +56,7 @@ app.use("/api", couponRoutes);
 app.use("/api", blogsRoutes);
 app.use("/api", impactRoute);
 app.use('/preview-images', previewImagesRoute);
+app.use("/api", csvcouponRoute)
 
 mongoose
   .connect(process.env.MONGO_URI, {
