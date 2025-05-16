@@ -5,8 +5,6 @@ const axios = require("axios");
 const Campaign = require("../models/Vcommission"); // adjust path as needed
 const getMulterUploader = require("../middleware/upload");
 
-
-
 const apiKey = process.env.VCOMMISSION_API || "67efa8eeb7e01645099c665b9ae67efa8eeb7e35";
 const baseUrl = `https://api.vcommission.com/v2/publisher/campaigns?apiKey=${apiKey}`;
 
