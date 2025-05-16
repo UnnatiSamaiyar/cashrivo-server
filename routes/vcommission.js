@@ -5,51 +5,19 @@ const axios = require("axios");
 const Campaign = require("../models/Vcommission"); // adjust path as needed
 const getMulterUploader = require("../middleware/upload");
 
-const apiKey =
-  process.env.VCOMMISSION_API || "67efa8eeb7e01645099c665b9ae67efa8eeb7e35";
+
+
+const apiKey = process.env.VCOMMISSION_API || "67efa8eeb7e01645099c665b9ae67efa8eeb7e35";
 const baseUrl = `https://api.vcommission.com/v2/publisher/campaigns?apiKey=${apiKey}`;
 
+// Main route: Fetch all campaigns
 router.get("/vcommission", async (req, res) => {
   try {
     const response = await axios.get(baseUrl);
-    const campaigns = response.data?.data?.campaigns;
-
-    if (!Array.isArray(campaigns)) {
-      return res
-        .status(500)
-        .json({ error: "Invalid campaign format from API" });
-    }
-
-    // Optional: clear old entries (if that's your goal)
-    await Campaign.deleteMany({});
-
-    // Filter out duplicates manually if needed
-    const simplifiedCampaigns = [];
-
-    for (const c of campaigns) {
-      const exists = await Campaign.findOne({ tracking_link: c.tracking_link });
-      if (!exists) {
-        simplifiedCampaigns.push({
-          title: c.title,
-          tracking_link: c.tracking_link,
-          countries: c.countries || [],
-        });
-      }
-    }
-
-    // Save only new entries
-    if (simplifiedCampaigns.length > 0) {
-      await Campaign.insertMany(simplifiedCampaigns);
-    }
-
-    res.json({
-      success: true,
-      message: `${simplifiedCampaigns.length} new campaigns saved`,
-      data: simplifiedCampaigns,
-    });
+    res.json(response.data);
   } catch (error) {
     console.error("Error fetching data:", error.message);
-    res.status(500).json({ error: "Failed to fetch or save vCommission data" });
+    res.status(500).json({ error: "Failed to fetch from vCommission" });
   }
 });
 
