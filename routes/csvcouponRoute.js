@@ -94,7 +94,7 @@ router.put('/edit-coupon/:id', upload.fields([
     const couponId = req.params.id;
     const {
       code, campaign_ids, campaigns, startDate, endDate,
-      type, status, app_rej_by, rej_reason, description
+      type, status, app_rej_by, rej_reason, description, tc, link, category 
     } = req.body;
 
     const updateFields = {
@@ -104,6 +104,9 @@ router.put('/edit-coupon/:id', upload.fields([
       ...(app_rej_by && { app_rej_by }),
       ...(rej_reason && { rej_reason }),
       ...(description && { description }),
+      ...(tc && {tc}),
+      ...(link && {link}),
+      ...(category && {category})
     };
 
     if (campaign_ids) {
@@ -131,11 +134,11 @@ router.put('/edit-coupon/:id', upload.fields([
 
     // Handle uploaded files
     if (req.files.company_logo && req.files.company_logo[0]) {
-      updateFields.company_logo = `/uploads/coupons/${req.files.company_logo[0].filename}`;
+      updateFields.company_logo = `/uploads/csvcoupons/${req.files.company_logo[0].filename}`;
     }
 
     if (req.files.offer_image && req.files.offer_image[0]) {
-      updateFields.offer_image = `/uploads/coupons/${req.files.offer_image[0].filename}`;
+      updateFields.offer_image = `/uploads/csvcoupons/${req.files.offer_image[0].filename}`;
     }
 
     const updatedCoupon = await Coupon.findByIdAndUpdate(
