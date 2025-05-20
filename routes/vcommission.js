@@ -19,6 +19,50 @@ router.get("/vcommission", async (req, res) => {
   }
 });
 
+router.get("/refresh-vcommission", async (req, res) => {
+  try {
+    const response = await axios.get(baseUrl);
+    const campaigns = response.data?.data?.campaigns;
+
+    if (!Array.isArray(campaigns)) {
+      return res.status(500).json({ error: "Invalid campaign format from API" });
+    }
+
+    let updatedCount = 0;
+
+    for (const c of campaigns) {
+      const existing = await Campaign.findOne({ title: c.title });
+
+      const newData = {
+        title: c.title,
+        tracking_link: c.tracking_link,
+        countries: c.countries,
+        category: c.categories
+      };
+
+      if (existing) {
+        // Preserve logo
+        newData.logo = existing.logo;
+
+        await Campaign.findByIdAndUpdate(existing._id, newData);
+      } else {
+        await Campaign.create(newData);
+      }
+
+      updatedCount++;
+    }
+
+    res.json({
+      success: true,
+      message: `${updatedCount} campaigns synced`,
+    });
+
+  } catch (error) {
+    console.error("Error syncing campaigns:", error.message);
+    res.status(500).json({ error: "Failed to sync vCommission data" });
+  }
+});
+
 
 router.get("/vcommission/saved", async (req, res) => {
   try {
