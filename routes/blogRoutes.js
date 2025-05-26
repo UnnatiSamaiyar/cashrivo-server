@@ -75,6 +75,44 @@ router.get("/get-blog/:id", async (req, res) => {
   }
 });
 
+router.put("/update-blog/:id", cpUpload, async (req, res) => {
+  try {
+    const {
+      title,
+      description,
+      bannerDesc,
+      bannerLink,
+      tags,
+      category,
+      content,
+    } = req.body;
+
+    const featuredImage = req.files?.featuredImage?.[0]?.filename;
+    const bannerImage = req.files?.bannerImage?.[0]?.filename;
+
+    const blog = await Blog.findById(req.params.id);
+    if (!blog) return res.status(404).json({ error: "Blog not found" });
+
+    blog.title = title;
+    blog.description = description;
+    if (featuredImage) blog.featuredImage = featuredImage;
+    if (bannerImage) blog.bannerImage = bannerImage;
+    blog.bannerDesc = bannerDesc;
+    blog.bannerLink = bannerLink;
+    blog.tags = tags ? tags.split(",").map((tag) => tag.trim()) : [];
+    blog.category = category;
+    blog.content = content;
+
+    await blog.save();
+
+    res.status(200).json({ message: "Blog updated", blog });
+  } catch (err) {
+    console.error("Error updating blog:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+
 
 
 module.exports = router;
