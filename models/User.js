@@ -15,7 +15,7 @@ const userSchema = new mongoose.Schema({
     isCompleted: { type: Boolean, default: false },
     stepsCompleted: { type: Number, default: 0 }, 
   },
-  rivoPoints: { type: Number, default: 0 },
+  rivoPoints: { type: Number, default: 10 },
 });
 
 userSchema.pre("save", async function (next) {
