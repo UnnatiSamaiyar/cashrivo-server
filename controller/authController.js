@@ -8,10 +8,6 @@ const createToken = (user) => {
   );
 };
 
-
-
-
-
 exports.signup = async (req, res) => {
   try {
     const { name, email, password, referCode } = req.body;

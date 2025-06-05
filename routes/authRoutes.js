@@ -27,7 +27,6 @@ function generateOtp() {
 router.post("/signup", signup);
 router.post("/login", login);
 router.post("/forgot", forgot);
-
 router.get("/users", getUsers);
 router.put("/users/:userId", updateUser);
 
@@ -81,15 +80,11 @@ router.post("/verify-otp", async (req, res) => {
       return res.status(400).json({ message: "Invalid OTP" });
     }
 
-    const now = new Date();
-
-    if (now > otpEntry.expiresAt) {
-      await Otp.deleteOne({ _id: otpEntry._id }); // optional cleanup
+    if (new Date() > otpEntry.expiresAt) {
       return res.status(400).json({ message: "OTP has expired" });
     }
 
-    // OTP is valid
-    await Otp.deleteOne({ _id: otpEntry._id }); // one-time use
+    // ✅ OTP is valid — no deletion yet
     res.status(200).json({ message: "OTP verified successfully" });
 
   } catch (error) {
@@ -97,6 +92,7 @@ router.post("/verify-otp", async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
+
 
 router.post("/reset-password", async (req, res) => {
   const { email, otp, newPassword } = req.body;
