@@ -93,7 +93,6 @@ router.post("/verify-otp", async (req, res) => {
   }
 });
 
-
 router.post("/reset-password", async (req, res) => {
   const { email, otp, newPassword } = req.body;
 
@@ -137,5 +136,7 @@ router.post("/reset-password", async (req, res) => {
     return res.status(500).json({ message: "Server error." });
   }
 });
+
+
 
 module.exports = router;
