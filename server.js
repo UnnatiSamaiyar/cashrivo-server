@@ -18,15 +18,36 @@ const blogsRoutes = require("./routes/blogRoutes");
 const impactRoute = require('./routes/impactRoutes');
 const previewImagesRoute = require('./utils/previewImages');
 const csvcouponRoute = require('./routes/csvcouponRoute');
+const flymediaRoute = require('./routes/flymediaRoute')
 
 
 require('./cron/fetchScheduler');
 
 const app = express();
 
-app.use(cors());
-app.use(cors({ origin: "https://cashrivo.com", credentials: true }));
+const allowedOrigins = [
+  "https://cashrivo.com",
+  "http://localhost:5173",
+  "http://localhost:5174"
+];
+
+app.use(cors({
+  origin: function (origin, callback) {
+    // allow requests with no origin (like mobile apps or curl)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    } else {
+      return callback(new Error("Not allowed by CORS"));
+    }
+  },
+  credentials: true
+}));
 app.use(express.json());
+app.use(express.json({ limit: '200mb' }));
+app.use(express.urlencoded({ extended: true, limit: '200mb' }));
+
+
 
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
@@ -58,7 +79,8 @@ app.use("/api", couponRoutes);
 app.use("/api", blogsRoutes);
 app.use("/api", impactRoute);
 app.use('/preview-images', previewImagesRoute);
-app.use("/api", csvcouponRoute)
+app.use("/api", csvcouponRoute);
+app.use("/api", flymediaRoute)
 
 mongoose
   .connect(process.env.MONGO_URI, {

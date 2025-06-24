@@ -117,6 +117,20 @@ router.put("/edit-vcomm/:id", upload.single("logo"), async (req, res) => {
   }
 });
 
+//Delete route
+router.delete("/delete/:id", async (req, res) => {
+  const { id } = req.params;
+  try {
+    const response = await axios.delete(`${baseUrl}/${id}`);
+    res.json({ message: `Deleted record with id ${id}`, data: response.data });
+  } catch (error) {
+    console.error("Error deleting data:", error.message);
+    res.status(500).json({ error: "Failed to delete from vCommission" });
+  }
+});
+
+
+
 // Get campaigns by category
 // router.get("/vcommission/category/:category", async (req, res) => {
 //   const { category } = req.params;

@@ -11,6 +11,8 @@ const Otp = require("../models/Otp");
 const nodemailer = require("nodemailer");
 const User = require("../models/User");
 const bcrypt = require("bcryptjs");
+const passport = require("passport");
+const GoogleStrategy = require("passport-google-oauth20").Strategy;
 
 // Configure your transporter (example with Gmail)
 const transporter = nodemailer.createTransport({
