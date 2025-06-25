@@ -63,7 +63,7 @@ router.post("/import-lmdoffers", async (req, res) => {
 
     // ✅ Get all lmd_ids to check for existing ones
     const lmdIds = processedOffers.map((offer) => offer.lmd_id);
-    const existing = await LmdOffer.find({ lmd_id: { $in: lmdIds } }, 'lmd_id');
+    const existing = await LmdOffer.find({ lmd_id: { $in: lmdIds } }, "lmd_id");
     const existingIds = new Set(existing.map((e) => e.lmd_id));
 
     // ✅ Filter out offers that already exist
@@ -91,17 +91,34 @@ router.post("/import-lmdoffers", async (req, res) => {
   }
 });
 
-
 // GET /all-lmdoffers
 router.get("/all-lmdoffers", async (req, res) => {
   try {
-    const offers = await LmdOffer.find().sort({ createdAt: -1 });
+    const now = new Date();
+
+    // Delete offers with end_date before yesterday
+    await LmdOffer.deleteMany({
+      end_date: {
+        $lt: new Date(now.getTime() - 24 * 60 * 60 * 1000),
+      },
+    });
+
+    // Fetch only offers that have a valid code and haven't expired
+    const offers = await LmdOffer.find({
+      end_date: {
+        $gte: new Date(now.setHours(0, 0, 0, 0)),
+      },
+      code: { $ne: "" }, // Exclude entries with null code
+    }).sort({ createdAt: -1 });
+
     res.status(200).json({ success: true, data: offers });
   } catch (error) {
     console.error("Error fetching offers:", error);
     res.status(500).json({ success: false, message: "Failed to fetch offers" });
   }
 });
+
+
 
 // MULTER UPLOAD (optional for image_url override)
 const getMulterUploader = require("../middleware/upload");
@@ -185,13 +202,11 @@ router.put(
           .json({ success: false, message: "Offer not found" });
       }
 
-      res
-        .status(200)
-        .json({
-          success: true,
-          data: updatedOffer,
-          message: "Offer updated successfully",
-        });
+      res.status(200).json({
+        success: true,
+        data: updatedOffer,
+        message: "Offer updated successfully",
+      });
     } catch (error) {
       console.error("Error updating LMD offer:", error);
       res
