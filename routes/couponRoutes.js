@@ -89,6 +89,31 @@ router.get("/get-coupon/:id", async (req, res) => {
     res.status(500).json({ message: "Server Error" });
   }
 })
+const axios = require('axios');
+router.get('/coupons', async (req, res) => {
+  try {
+    const response = await axios.post(
+      'https://api.involve.asia/api/offers/all',
+      {
+        page: 1,
+        limit: 10,
+        // You can filter by advertiser_id, category, country, etc.
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'API-Key': process.env.INVOLVE_API_KEY,
+          'API-Secret': process.env.INVOLVE_API_SECRET,
+        },
+      }
+    );
+
+    res.status(200).json(response.data);
+  } catch (err) {
+    console.error('Error fetching coupons:', err.response?.data || err.message);
+    res.status(500).json({ error: 'Failed to fetch coupons' });
+  }
+});
 // GET coupons by store name
 router.get("/get-coupons-by-store/:storeName", async (req, res) => {
   try {
