@@ -20,6 +20,8 @@ const previewImagesRoute = require('./utils/previewImages');
 const csvcouponRoute = require('./routes/csvcouponRoute');
 const flymediaRoute = require('./routes/flymediaRoute');
 const cuelinksRoutes = require('./routes/cuelinks');
+const amazonRoute = require('./routes/amazonRoute');
+
 
 
 require('./cron/fetchScheduler');
@@ -85,6 +87,7 @@ app.use('/preview-images', previewImagesRoute);
 app.use("/api", csvcouponRoute);
 app.use("/api", flymediaRoute);
 app.use("/api", cuelinksRoutes);
+app.use("/api", amazonRoute);
 
 mongoose
   .connect(process.env.MONGO_URI, {
