@@ -21,7 +21,8 @@ const csvcouponRoute = require('./routes/csvcouponRoute');
 const flymediaRoute = require('./routes/flymediaRoute');
 const cuelinksRoutes = require('./routes/cuelinks');
 const amazonRoute = require('./routes/amazonRoute');
-const amazonBannerRoute = require('./routes/amazonBannerRoute')
+const amazonBannerRoute = require('./routes/amazonBannerRoute');
+const exclusiveRoute = require('./routes/exclusiveDealRoute');
 
 
 require('./cron/fetchScheduler');
@@ -88,7 +89,8 @@ app.use("/api", csvcouponRoute);
 app.use("/api", flymediaRoute);
 app.use("/api", cuelinksRoutes);
 app.use("/api", amazonRoute);
-app.use('/api', amazonBannerRoute)
+app.use('/api', amazonBannerRoute);
+app.use('/api', exclusiveRoute);
 
 mongoose
   .connect(process.env.MONGO_URI, {
