@@ -24,7 +24,7 @@ router.post("/exclusive-banners-post", upload.single("image"), async (req, res) 
       title,
       description,
       link,
-      imageUrl: `/uploads/ExclusiveDeals/${req.file.filename}`,
+      imageUrl: `/uploads/exclusivedeals/${req.file.filename}`,
     });
 
     await banner.save();
