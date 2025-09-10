@@ -41,7 +41,7 @@ router.put("/exclusive-banners-edit/:id", upload.single("image"), async (req, re
     const updateData = { title, description, link };
 
     if (req.file) {
-      updateData.imageUrl = `/uploads/ExclusiveDeals/${req.file.filename}`;
+      updateData.imageUrl = `/uploads/exclusivedeals/${req.file.filename}`;
     }
 
     const banner = await ExclusiveDeal.findByIdAndUpdate(req.params.id, updateData, {
