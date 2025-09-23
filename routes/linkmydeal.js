@@ -4,11 +4,12 @@ const LmdOffer = require("../models/LmdOffers"); // Adjust path if needed
 
 function parseDate(dateStr) {
   if (!dateStr) return null;
-  const [datePart, timePart = "00:00"] = dateStr.split(" ");
-  const [day, month, year] = datePart.split("-");
-  const isoString = `${year}-${month}-${day}T${timePart}:00`;
-  const dateObj = new Date(isoString);
-  return isNaN(dateObj.getTime()) ? null : dateObj;
+
+  const [day, month, year] = dateStr.split("-").map(Number);
+  if (!day || !month || !year) return null;
+
+  // Return JS Date object
+  return new Date(year, month - 1, day); // month-1 kyunki JS me month 0-indexed
 }
 
 // POST /import-lmdoffers
@@ -111,13 +112,14 @@ router.get("/all-lmdoffers", async (req, res) => {
       code: { $ne: "" }, // Exclude entries with null code
     }).sort({ createdAt: -1 });
 
+    console.log("Total offers fetched:", offers.length);
+
     res.status(200).json({ success: true, data: offers });
   } catch (error) {
     console.error("Error fetching offers:", error);
     res.status(500).json({ success: false, message: "Failed to fetch offers" });
   }
 });
-
 
 
 // MULTER UPLOAD (optional for image_url override)
