@@ -23,7 +23,9 @@ const cuelinksRoutes = require('./routes/cuelinks');
 const amazonRoute = require('./routes/amazonRoute');
 const amazonBannerRoute = require('./routes/amazonBannerRoute');
 const exclusiveRoute = require('./routes/exclusiveDealRoute');
-const involveAsia = require('./routes/involveAsia')
+const involveAsia = require('./routes/involveAsia');
+const shopsyRoute = require('./routes/shopsyDealRoute');
+const flipkartRoute = require('./routes/flipkartDealRoute');
 
 require('./cron/fetchScheduler');
 
@@ -92,6 +94,8 @@ app.use("/api", amazonRoute);
 app.use('/api', amazonBannerRoute);
 app.use('/api', exclusiveRoute);
 app.use('/api', involveAsia);
+app.use('/api', flipkartRoute);
+app.use('/api', shopsyRoute);
 
 mongoose
   .connect(process.env.MONGO_URI, {
