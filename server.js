@@ -26,6 +26,7 @@ const exclusiveRoute = require('./routes/exclusiveDealRoute');
 const involveAsia = require('./routes/involveAsia');
 const shopsyRoute = require('./routes/shopsyDealRoute');
 const flipkartRoute = require('./routes/flipkartDealRoute');
+const ajioRoute = require('./routes/ajioDealRoute')
 
 require('./cron/fetchScheduler');
 
@@ -96,6 +97,7 @@ app.use('/api', exclusiveRoute);
 app.use('/api', involveAsia);
 app.use('/api', flipkartRoute);
 app.use('/api', shopsyRoute);
+app.use('/api', ajioRoute);
 
 mongoose
   .connect(process.env.MONGO_URI, {
