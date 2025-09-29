@@ -7,7 +7,7 @@ const upload = getMulterUploader("uploads/ajiodeals");
 
 router.get("/ajio-banners-get", async (req, res) => {
   try {
-    const banners = await AjioDeal.find().sort({ createdAt: -1 });
+    const banners = await AjioDeals.find().sort({ createdAt: -1 });
     res.json(banners);
   } catch (err) {
     res.status(500).json({ error: err.message });
