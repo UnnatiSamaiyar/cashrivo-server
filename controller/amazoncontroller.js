@@ -1,13 +1,24 @@
-const ProductAdvertisingAPIv1 = require("../amazon-paapi/src/index.js");
+// ✅ Correct import (amazon-paapi package export structure)
+const {
+  ApiClient,
+  DefaultApi,
+  SearchItemsRequest,
+  SearchItemsResponse,
+  GetItemsRequest,
+  GetItemsResponse,
+} = require("amazon-paapi");
 
-const defaultClient = ProductAdvertisingAPIv1.ApiClient.instance;
-defaultClient.accessKey = process.env.AMAZON_ACCESS_KEY;
-defaultClient.secretKey = process.env.AMAZON_SECRET_KEY;
-defaultClient.host = process.env.AMAZON_HOST;
-defaultClient.region = process.env.AMAZON_REGION;
+// ✅ Configure client
+const client = ApiClient.instance;
+client.accessKey = process.env.AMAZON_ACCESS_KEY;
+client.secretKey = process.env.AMAZON_SECRET_KEY;
+client.host = process.env.AMAZON_HOST;
+client.region = process.env.AMAZON_REGION;
 
-const api = new ProductAdvertisingAPIv1.DefaultApi();
+// ✅ Initialize API object
+const api = new DefaultApi();
 
+// (NO CHANGES) Your trending keyword list
 const commonKeywordsIndia = [
   "Smart TV 4K",
   "Wireless Earbuds",
@@ -138,27 +149,26 @@ const commonKeywordsIndia = [
   "Grooming Kit Gift",
 ];
 
+// ✅ Trending Search API
 exports.searchTrendingIndia = async (req, res) => {
   try {
     let allItems = [];
 
-    // 🔄 Pagination control from query params
-    const page = parseInt(req.query.page) || 1; // default page = 1
-    const limit = parseInt(req.query.limit) || 10; // default 10 keywords per batch
-    const startIndex = (page - 1) * limit;
-    const endIndex = page * limit;
-
-    const keywordsToSearch = commonKeywordsIndia.slice(startIndex, endIndex);
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const keywordsToSearch = commonKeywordsIndia.slice(
+      (page - 1) * limit,
+      page * limit
+    );
 
     for (const keyword of keywordsToSearch) {
-      const searchItemsRequest =
-        new ProductAdvertisingAPIv1.SearchItemsRequest();
-      searchItemsRequest["PartnerTag"] = process.env.AMAZON_PARTNER_TAG;
-      searchItemsRequest["PartnerType"] = "Associates";
-      searchItemsRequest["Keywords"] = keyword;
-      searchItemsRequest["SearchIndex"] = "All";
-      searchItemsRequest["ItemCount"] = 2;
-      searchItemsRequest["Resources"] = [
+      const request = new SearchItemsRequest();
+      request["PartnerTag"] = process.env.AMAZON_PARTNER_TAG;
+      request["PartnerType"] = "Associates";
+      request["Keywords"] = keyword;
+      request["SearchIndex"] = "All";
+      request["ItemCount"] = 2;
+      request["Resources"] = [
         "Images.Primary.Medium",
         "ItemInfo.Title",
         "Offers.Listings.Price",
@@ -166,96 +176,52 @@ exports.searchTrendingIndia = async (req, res) => {
       ];
 
       try {
-        const data = await api.searchItems(searchItemsRequest);
-        const response =
-          ProductAdvertisingAPIv1.SearchItemsResponse.constructFromObject(data);
+        const data = await api.searchItems(request);
+        const response = SearchItemsResponse.constructFromObject(data);
 
-        if (response.SearchResult && response.SearchResult.Items) {
-          const items = response.SearchResult.Items.map((item) => {
-            const offer = item.Offers?.Listings?.[0];
-            const price = offer?.Price?.DisplayAmount || null;
-            const saving = offer?.SavingBasis?.DisplayAmount || null;
+        if (response.SearchResult?.Items) {
+          const mapped = response.SearchResult.Items.map((item) => ({
+            Keyword: keyword,
+            ASIN: item.ASIN,
+            Title: item.ItemInfo?.Title?.DisplayValue,
+            URL: item.DetailPageURL,
+            Image: item.Images?.Primary?.Medium?.URL,
+            Price: item.Offers?.Listings?.[0]?.Price?.DisplayAmount || null,
+          }));
 
-            let discountPercent = null;
-            if (offer?.SavingBasis?.Amount && offer?.Price?.Amount) {
-              const original = offer.SavingBasis.Amount;
-              const current = offer.Price.Amount;
-              discountPercent =
-                (((original - current) / original) * 100).toFixed(0) + "%";
-            }
-
-            return {
-              Keyword: keyword,
-              ASIN: item.ASIN,
-              Title: item.ItemInfo?.Title?.DisplayValue,
-              URL: item.DetailPageURL,
-              Image: item.Images?.Primary?.Medium?.URL,
-              Price: price,
-              OriginalPrice: saving,
-              Discount: discountPercent,
-            };
-          });
-
-          allItems.push(...items);
+          allItems.push(...mapped);
         }
       } catch (err) {
-        if (err.message.includes("Too Many Requests")) {
-          console.warn(`Keyword "${keyword}" skipped due to API rate limit.`);
-
-          // 👇 Add a placeholder entry so frontend knows it failed
-          allItems.push({
-            Keyword: keyword,
-            Error: "Rate limit exceeded",
-            Items: [],
-          });
-
-          // optional: wait 1 sec before next call
-          await new Promise((r) => setTimeout(r, 1000));
-        } else {
-          console.warn(`Keyword "${keyword}" failed:`, err.message);
-        }
+        console.warn(`Keyword "${keyword}" failed:`, err.message);
       }
     }
 
-    res.json({
-      success: true,
-      page,
-      limit,
-      totalKeywords: commonKeywordsIndia.length,
-      keywordsUsed: keywordsToSearch,
-      items: allItems,
-    });
+    res.json({ success: true, page, limit, items: allItems });
   } catch (error) {
-    console.error("Amazon API Error:", error);
-    res
-      .status(500)
-      .json({ success: false, error: error.message || "Something went wrong" });
+    res.status(500).json({ success: false, error: error.message });
   }
 };
 
-// Controller function
+// ✅ Get Single Product by ASIN
 exports.getItem = async (req, res) => {
   try {
-    const { asin } = req.query; // ?asin=B0969KGM9B
+    const { asin } = req.query;
 
-    var getItemsRequest = new ProductAdvertisingAPIv1.GetItemsRequest();
-    getItemsRequest["PartnerTag"] = process.env.AMAZON_PARTNER_TAG;
-    getItemsRequest["PartnerType"] = "Associates";
-    getItemsRequest["ItemIds"] = [asin];
-    getItemsRequest["Condition"] = "New";
-    getItemsRequest["Resources"] = [
+    const request = new GetItemsRequest();
+    request["PartnerTag"] = process.env.AMAZON_PARTNER_TAG;
+    request["PartnerType"] = "Associates";
+    request["ItemIds"] = [asin];
+    request["Resources"] = [
       "Images.Primary.Medium",
       "ItemInfo.Title",
-      "OffersV2.Listings.Price",
+      "Offers.Listings.Price",
     ];
 
-    const data = await api.getItems(getItemsRequest);
-    const getItemsResponse =
-      ProductAdvertisingAPIv1.GetItemsResponse.constructFromObject(data);
+    const data = await api.getItems(request);
+    const item = GetItemsResponse.constructFromObject(data);
 
-    res.json(getItemsResponse);
+    res.json(item);
   } catch (error) {
-    console.error("Amazon API Error:", error);
-    res.status(500).json({ error: "Amazon API failed", details: error });
+    res.status(500).json({ success: false, error: error.message });
   }
 };
