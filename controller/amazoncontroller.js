@@ -10,11 +10,9 @@ const api = new ProductAdvertisingAPIv1.DefaultApi();
 
 const commonKeywordsIndia = [
   "Smart TV 4K",
-  "Foldable Smartphone",
   "Wireless Earbuds",
   "True Wireless Earphones",
   "Portable SSD",
-  "Mini LED Monitor",
   "Gaming Chair",
   "Electric Scooter",
   "Smart Helmet",

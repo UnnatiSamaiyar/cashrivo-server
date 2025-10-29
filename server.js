@@ -26,7 +26,8 @@ const exclusiveRoute = require('./routes/exclusiveDealRoute');
 const involveAsia = require('./routes/involveAsia');
 const shopsyRoute = require('./routes/shopsyDealRoute');
 const flipkartRoute = require('./routes/flipkartDealRoute');
-const ajioRoute = require('./routes/ajioDealRoute')
+const ajioRoute = require('./routes/ajioDealRoute');
+const lmdCronRoute = require("./routes/linkmydeal");
 
 require('./cron/fetchScheduler');
 
@@ -98,6 +99,7 @@ app.use('/api', involveAsia);
 app.use('/api', flipkartRoute);
 app.use('/api', shopsyRoute);
 app.use('/api', ajioRoute);
+app.use("/api", lmdCronRoute);
 
 mongoose
   .connect(process.env.MONGO_URI, {
@@ -110,3 +112,13 @@ mongoose
     );
   })
   .catch((err) => console.error("DB connection failed", err));
+
+//Admin routes
+const adminAuthRoutes = require("./admin/routes/auth");
+const adminUserRoutes = require("./admin/routes/users");
+const adminWebsiteRoutes = require("./admin/routes/websites");
+
+
+app.use("/api/admin/auth", adminAuthRoutes);     
+app.use("/api/admin", adminUserRoutes);    
+app.use("/api/admin", adminWebsiteRoutes); 

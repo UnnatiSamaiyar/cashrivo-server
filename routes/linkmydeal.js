@@ -218,4 +218,117 @@ router.put(
   }
 );
 
+const axios = require("axios");
+const cron = require("node-cron");
+const LmdSyncLog = require("../models/LmdSyncLog"); // ✅ NEW MODEL
+
+const LMD_API = process.env.LMD_API;
+const format = "json";
+
+function parseDate(dateStr) {
+  if (!dateStr) return null;
+  const [day, month, year] = dateStr.split("-").map(Number);
+  return new Date(year, month - 1, day);
+}
+
+// ✅ Main Fetch Function
+async function fetchLMDOffers() {
+  let logData = {
+    totalFetched: 0,
+    inserted: 0,
+    status: "success",
+    message: "",
+  };
+
+  try {
+    console.log("⏳ Fetching LinkMyDeals offers...");
+
+    const res = await axios.get(
+      `http://feed.linkmydeals.com/getOffers/?API_KEY=${LMD_API}&incremental=true&format=${format}&off_record=false`
+    );
+
+    const offers = res.data.offers || [];
+    logData.totalFetched = offers.length;
+
+    if (offers.length === 0) {
+      logData.message = "No offers returned from API";
+      await LmdSyncLog.create(logData);
+      return;
+    }
+
+    const processedOffers = offers.map((offer) => ({
+      lmd_id: Number(offer.lmd_id),
+      store: offer.store || "",
+      merchant_homepage: offer.merchant_homepage || "",
+      long_offer: offer.long_offer || "",
+      title: offer.title || "",
+      description: offer.description || "",
+      code: offer.code || "",
+      terms_and_conditions: offer.terms_and_conditions || "",
+      categories:
+        typeof offer.categories === "string"
+          ? offer.categories.split(",").map((c) => c.trim())
+          : [],
+      featured: String(offer.featured).toLowerCase() === "yes",
+      publisher_exclusive: offer.publisher_exclusive || "N",
+      url: offer.url || "",
+      smartlink: offer.smartlink || "",
+      image_url: offer.image_url || "",
+      type: offer.type || "",
+      offer: offer.offer || "",
+      offer_value: offer.offer_value || "",
+      status: offer.status || "active",
+      start_date: parseDate(offer.start_date),
+      end_date: parseDate(offer.end_date),
+    }));
+
+    const ids = processedOffers.map((o) => o.lmd_id);
+    const existing = await LmdOffer.find({ lmd_id: { $in: ids } }, "lmd_id");
+    const existingIds = new Set(existing.map((e) => e.lmd_id));
+
+    const uniqueOffers = processedOffers.filter(
+      (offer) => !existingIds.has(offer.lmd_id)
+    );
+
+    logData.inserted = uniqueOffers.length;
+
+    if (uniqueOffers.length > 0) {
+      await LmdOffer.insertMany(uniqueOffers);
+      console.log(`✅ ${uniqueOffers.length} new offers inserted.`);
+      logData.message = "Offers fetched & inserted.";
+    } else {
+      logData.message = "All offers were duplicates. No insert performed.";
+    }
+
+    await LmdSyncLog.create(logData);
+  } catch (error) {
+    logData.status = "failed";
+    logData.message = error.message || "Unknown error";
+    await LmdSyncLog.create(logData);
+    console.error("❌ LMD Fetch Error:", error);
+  }
+}
+
+// ✅ Manual trigger route
+router.get("/fetch-lmdoffers", async (req, res) => {
+  await fetchLMDOffers();
+  res.json({ success: true, message: "Manual sync completed" });
+});
+
+// ✅ NEW: API to get logs
+router.get("/lmd-sync-logs", async (req, res) => {
+  const logs = await LmdSyncLog.find().sort({ createdAt: -1 }).limit(30); // latest 30 logs
+  res.json({ success: true, logs });
+});
+
+// ✅ Runs daily at 09:00 AM IST
+cron.schedule(
+  "0 9 * * *",
+  () => {
+    console.log("▶ Auto Sync Running @ 9AM IST");
+    fetchLMDOffers();
+  },
+  { timezone: "Asia/Kolkata" }
+);
+
 module.exports = router;

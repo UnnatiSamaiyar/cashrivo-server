@@ -1,66 +1,76 @@
 const express = require("express");
 const router = express.Router();
 const AmazonItemModel = require("../models/AmazonItemModel");
+const { searchTrendingIndia } = require("../controller/amazoncontroller");
 
 /**
  * POST /api/save-all
- * - If req.body.items provided → upsert those
- * - If no req.body.items → reload existing DB items and ensure consistency
+ * Fetches offers via Amazon API controller & saves/upserts to DB
  */
 router.post("/save-all", async (req, res) => {
   try {
-    const incomingItems = Array.isArray(req.body?.items) ? req.body.items : [];
+    console.log("🚀 Fetching trending Amazon offers...");
+    const mockReq = { query: { page: req.query.page || 1, limit: req.query.limit || 10 } };
+
+    // Use controller function directly
+    let apiResponse;
+    try {
+      apiResponse = await new Promise((resolve, reject) => {
+        const mockRes = {
+          json: (data) => resolve(data),
+          status: (code) => ({
+            json: (data) => reject({ code, data }),
+          }),
+        };
+        searchTrendingIndia(mockReq, mockRes);
+      });
+    } catch (err) {
+      console.error("❌ Error fetching Amazon data:", err);
+      return res.status(500).json({ success: false, error: "Failed to fetch from Amazon API" });
+    }
+
+    const fetchedItems = apiResponse?.items || [];
+    if (!fetchedItems.length)
+      return res.json({ success: true, message: "No items fetched from Amazon API" });
+
+    console.log(`📦 Received ${fetchedItems.length} items to save/update from Amazon API.`);
+
     let totalSaved = 0;
     let totalUpdated = 0;
     let totalErrors = 0;
 
-    // ✅ Case 1: items provided in request body
-    if (incomingItems.length > 0) {
-      console.log(`📦 Received ${incomingItems.length} items to save/update.`);
+    const ops = fetchedItems.map(async (item) => {
+      if (!item?.ASIN || !item.Title) return;
 
-      const ops = incomingItems.map(async (item) => {
-        if (!item?.ASIN || !item.Title) return;
+      const cleanItem = {
+        Keyword: item.Keyword?.trim() || "",
+        ASIN: item.ASIN?.trim(),
+        Title: item.Title?.trim() || "",
+        URL: item.URL?.trim() || "",
+        Image: item.Image?.trim() || "",
+        Price: item.Price?.trim() || "",
+        OriginalPrice: item.OriginalPrice?.trim() || "",
+        Discount: item.Discount?.trim() || "",
+        Error: item.Error || "",
+      };
 
-        const cleanItem = {
-          Keyword: item.Keyword?.trim() || "",
-          ASIN: item.ASIN?.trim(),
-          Title: item.Title?.trim() || "",
-          URL: item.URL?.trim() || "",
-          Image: item.Image?.trim() || "",
-          Price: item.Price?.trim() || "",
-          OriginalPrice: item.OriginalPrice?.trim() || "",
-          Discount: item.Discount?.trim() || "",
-          Error: item.Error || "",
-        };
+      try {
+        const existing = await AmazonItemModel.findOne({ ASIN: cleanItem.ASIN });
 
-        try {
-          const existing = await AmazonItemModel.findOne({ ASIN: cleanItem.ASIN });
-
-          if (existing) {
-            await AmazonItemModel.updateOne(
-              { ASIN: cleanItem.ASIN },
-              { $set: cleanItem }
-            );
-            totalUpdated++;
-          } else {
-            await AmazonItemModel.create(cleanItem);
-            totalSaved++;
-          }
-        } catch (err) {
-          console.error(`❌ Error saving ASIN ${item.ASIN}:`, err.message);
-          totalErrors++;
+        if (existing) {
+          await AmazonItemModel.updateOne({ ASIN: cleanItem.ASIN }, { $set: cleanItem });
+          totalUpdated++;
+        } else {
+          await AmazonItemModel.create(cleanItem);
+          totalSaved++;
         }
-      });
+      } catch (err) {
+        console.error(`❌ Error saving ASIN ${item.ASIN}:`, err.message);
+        totalErrors++;
+      }
+    });
 
-      await Promise.allSettled(ops);
-    }
-
-    // ✅ Case 2: No items provided — fallback behavior
-    else {
-      console.log("ℹ️ No items provided, refreshing from DB...");
-      const dbItems = await AmazonItemModel.find();
-      totalUpdated = dbItems.length;
-    }
+    await Promise.allSettled(ops);
 
     res.json({
       success: true,
@@ -68,6 +78,8 @@ router.post("/save-all", async (req, res) => {
       totalItemsSaved: totalSaved,
       totalItemsUpdated: totalUpdated,
       totalErrors,
+      fetchedCount: fetchedItems.length,
+      fetchedKeywords: apiResponse.keywordsUsed,
     });
   } catch (err) {
     console.error("🔥 Fatal Error in /save-all:", err);
