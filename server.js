@@ -105,13 +105,18 @@ mongoose
   .connect(process.env.MONGO_URI, {
     useNewUrlParser: true,
     useUnifiedTopology: true,
+    dbName: "test", // 👈 force connection to the correct DB
   })
   .then(() => {
-    app.listen(process.env.PORT, () =>
-      console.log(`Server running on http://localhost:${process.env.PORT}`)
-    );
+    console.log("✅ MongoDB connected successfully!");
+    console.log("📂 Using database:", mongoose.connection.db.databaseName);
+
+    app.listen(process.env.PORT, () => {
+      console.log(`🚀 Server running on http://localhost:${process.env.PORT}`);
+    });
   })
-  .catch((err) => console.error("DB connection failed", err));
+  .catch((err) => console.error("❌ DB connection failed:", err));
+
 
 //Admin routes
 const adminAuthRoutes = require("./admin/routes/auth");
