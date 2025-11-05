@@ -2,15 +2,9 @@ const express = require("express");
 const router = express.Router();
 const LmdOffer = require("../models/LmdOffers"); // Adjust path if needed
 
-function parseDate(dateStr) {
-  if (!dateStr) return null;
 
-  const [day, month, year] = dateStr.split("-").map(Number);
-  if (!day || !month || !year) return null;
 
-  // Return JS Date object
-  return new Date(year, month - 1, day); // month-1 kyunki JS me month 0-indexed
-}
+
 
 // POST /import-lmdoffers
 router.post("/import-lmdoffers", async (req, res) => {
@@ -95,31 +89,23 @@ router.post("/import-lmdoffers", async (req, res) => {
 // GET /all-lmdoffers
 router.get("/all-lmdoffers", async (req, res) => {
   try {
-    const now = new Date();
+    // Fetch everything (no deletion, no filtering)
+    const offers = await LmdOffer.find({})
+      .sort({ createdAt: -1 })
+      .lean();
 
-    // Delete offers with end_date before yesterday
-    await LmdOffer.deleteMany({
-      end_date: {
-        $lt: new Date(now.getTime() - 24 * 60 * 60 * 1000),
-      },
-    });
-
-    // Fetch only offers that have a valid code and haven't expired
-    const offers = await LmdOffer.find({
-      end_date: {
-        $gte: new Date(now.setHours(0, 0, 0, 0)),
-      },
-      code: { $ne: "" }, // Exclude entries with null code
-    }).sort({ createdAt: -1 });
-
-    console.log("Total offers fetched:", offers.length);
+    console.log("✅ Total offers fetched:", offers.length);
 
     res.status(200).json({ success: true, data: offers });
   } catch (error) {
     console.error("Error fetching offers:", error);
-    res.status(500).json({ success: false, message: "Failed to fetch offers" });
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch offers" });
   }
 });
+
+
 
 
 // MULTER UPLOAD (optional for image_url override)
@@ -226,9 +212,63 @@ const LMD_API = process.env.LMD_API;
 const format = "json";
 
 function parseDate(dateStr) {
-  if (!dateStr) return null;
-  const [day, month, year] = dateStr.split("-").map(Number);
-  return new Date(year, month - 1, day);
+  console.log("🕓 Raw date input:", dateStr);
+
+  if (!dateStr) {
+    console.log("❌ No dateStr provided");
+    return null;
+  }
+
+  if (dateStr instanceof Date && !isNaN(dateStr)) {
+    console.log("✅ Already a valid Date:", dateStr);
+    return dateStr;
+  }
+
+  const s = String(dateStr).trim();
+  console.log("➡️  Trimmed date string:", s);
+
+  // Try native Date() parse
+  const nativeParsed = new Date(s);
+  console.log("📅 Native parsed:", nativeParsed, "isValid?", !isNaN(nativeParsed.getTime()));
+
+  if (!isNaN(nativeParsed.getTime())) {
+    console.log("✅ Using native parsed date:", nativeParsed);
+    return nativeParsed;
+  }
+
+  // Split manually (handles 'YYYY-MM-DD' or 'DD-MM-YYYY')
+  const parts = s.split(/[-\/]/).map((p) => Number(p));
+  console.log("🔢 Split parts:", parts);
+
+  if (parts.length !== 3) {
+    console.log("❌ Invalid date format, returning null");
+    return null;
+  }
+
+  let year, month, day;
+
+  // Detect format by position
+  if (parts[0] > 31) {
+    year = parts[0];
+    month = parts[1];
+    day = parts[2];
+    console.log("📆 Detected format: YYYY-MM-DD");
+  } else if (parts[2] > 31) {
+    day = parts[0];
+    month = parts[1];
+    year = parts[2];
+    console.log("📆 Detected format: DD-MM-YYYY");
+  } else {
+    console.log("⚠️ Could not detect format properly, returning null");
+    return null;
+  }
+
+  console.log("🧩 Parsed values → year:", year, "month:", month, "day:", day);
+
+  const result = new Date(year, month - 1, day);
+  console.log("✅ Final JS Date:", result, "\n----------------------------");
+
+  return result;
 }
 
 // ✅ Main Fetch Function
