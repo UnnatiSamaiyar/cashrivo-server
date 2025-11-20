@@ -106,6 +106,31 @@ router.get("/all-lmdoffers", async (req, res) => {
 });
 
 
+router.get("/unique-offer-types", async (req, res) => {
+  try {
+    // Fetch distinct types from all offers
+    const uniqueTypes = await LmdOffer.distinct("type");
+
+    // Optional: Sort alphabetically and filter empty/null
+    const cleanedTypes = uniqueTypes
+      .filter((t) => t && t.trim() !== "")
+      .sort((a, b) => a.localeCompare(b));
+
+    console.log("✅ Unique offer types found:", cleanedTypes.length);
+
+    res.status(200).json({
+      success: true,
+      count: cleanedTypes.length,
+      data: cleanedTypes,
+    });
+  } catch (error) {
+    console.error("❌ Error fetching unique offer types:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch unique offer types",
+    });
+  }
+});
 
 
 // MULTER UPLOAD (optional for image_url override)

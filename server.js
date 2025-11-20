@@ -35,6 +35,7 @@ const app = express();
 
 const allowedOrigins = [
   "https://cashrivo.com",
+  "https://www.cashrivo.com",
   "http://localhost:5173",
   "http://localhost:5174"
 ];
