@@ -10,6 +10,7 @@ const blogSchema = new mongoose.Schema({
   tags: [String],
   category: String,
   content: String,
+  images: [String], 
 }, { timestamps: true });
 
 module.exports = mongoose.model("Blog", blogSchema);
