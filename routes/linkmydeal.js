@@ -335,6 +335,18 @@ router.get("/all-lmdoffers", async (req, res) => {
   }
 });
 
+router.get("/backup-lmdoffers", async (req, res) => {
+  try {
+    const offers = await BackupCoupon.find({}).sort({ createdAt: -1 }).lean();
+    return res.status(200).json({ success: true, data: offers });
+  } catch (error) {
+    console.error("Error fetching offers:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch offers" });
+  }
+});
+
 router.get("/unique-offer-types", async (req, res) => {
   try {
     const uniqueTypes = await LmdOffer.distinct("type");
