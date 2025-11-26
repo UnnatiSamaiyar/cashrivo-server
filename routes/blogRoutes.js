@@ -51,6 +51,7 @@ router.post("/create", cpUpload, async (req, res) => {
   try {
     const {
       title,
+      slug,
       description,
       bannerDesc,
       bannerLink,
@@ -67,6 +68,7 @@ router.post("/create", cpUpload, async (req, res) => {
 
     const newBlog = new Blog({
       title,
+      slug,
       description,
       featuredImage,
       bannerImage,
@@ -112,11 +114,32 @@ router.get("/get-blog/:id", async (req, res) => {
   }
 });
 
+// GET by slug (new) - add this to routes/blogs.js
+// READ blog by slug
+router.get("/get-blog-by-slug/:slug", async (req, res) => {
+  try {
+    const { slug } = req.params;
+    const blog = await Blog.findOne({ slug });
+
+    if (!blog) {
+      return res.status(404).json({ message: "Blog not found" });
+    }
+
+    res.status(200).json(blog);
+  } catch (error) {
+    console.error("Error fetching blog by slug:", error);
+    res.status(500).json({ message: "Server Error" });
+  }
+});
+
+
+
 // UPDATE
 router.put("/update-blog/:id", cpUpload, async (req, res) => {
   try {
     const {
       title,
+      slug,
       description,
       bannerDesc,
       bannerLink,
@@ -132,6 +155,7 @@ router.put("/update-blog/:id", cpUpload, async (req, res) => {
     if (!blog) return res.status(404).json({ error: "Blog not found" });
 
     blog.title = title;
+    blog.slug = slug;
     blog.description = description;
     if (featuredImage) blog.featuredImage = featuredImage;
     if (bannerImage) blog.bannerImage = bannerImage;
