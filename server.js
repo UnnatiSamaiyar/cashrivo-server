@@ -28,6 +28,7 @@ const shopsyRoute = require('./routes/shopsyDealRoute');
 const flipkartRoute = require('./routes/flipkartDealRoute');
 const ajioRoute = require('./routes/ajioDealRoute');
 const lmdCronRoute = require("./routes/linkmydeal");
+const agodaRoute = require('./routes/agoda');
 
 require('./cron/fetchScheduler');
 
@@ -42,7 +43,6 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: function (origin, callback) {
-    // allow requests with no origin (like mobile apps or curl)
     if (!origin) return callback(null, true);
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
@@ -52,12 +52,13 @@ app.use(cors({
   },
   credentials: true
 }));
+
 app.use(express.json());
 app.use(express.json({ limit: '200mb' }));
 app.use(express.urlencoded({ extended: true, limit: '200mb' }));
 
 app.get('/', (req, res) => {
-    res.send('Backend working!');
+  res.send('Backend working!');
 });
 
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
@@ -76,7 +77,6 @@ app.get('/proxy-logo', async (req, res) => {
     res.status(500).send("Failed to fetch image");
   }
 });
-
 
 app.use("/api/auth", authRoutes);
 app.use("/api", contactRoutes);
@@ -101,30 +101,34 @@ app.use('/api', flipkartRoute);
 app.use('/api', shopsyRoute);
 app.use('/api', ajioRoute);
 app.use("/api", lmdCronRoute);
+app.use('/api', agodaRoute);
 
+// -----------------------------
+//   ⭐ FIXED: FORCE IPv4 LISTEN
+// -----------------------------
 mongoose
   .connect(process.env.MONGO_URI, {
     useNewUrlParser: true,
     useUnifiedTopology: true,
-    dbName: "test", // 👈 force connection to the correct DB
+    dbName: "test",
   })
   .then(() => {
     console.log("✅ MongoDB connected successfully!");
     console.log("📂 Using database:", mongoose.connection.db.databaseName);
 
-    app.listen(process.env.PORT, () => {
-      console.log(`🚀 Server running on http://localhost:${process.env.PORT}`);
+    // ⭐ THE ONLY FIX
+    app.listen(process.env.PORT, "0.0.0.0", () => {
+      console.log(`🚀 Server running on http://0.0.0.0:${process.env.PORT}`);
     });
   })
   .catch((err) => console.error("❌ DB connection failed:", err));
 
 
-//Admin routes
+// Admin routes
 const adminAuthRoutes = require("./admin/routes/auth");
 const adminUserRoutes = require("./admin/routes/users");
 const adminWebsiteRoutes = require("./admin/routes/websites");
 
-
-app.use("/api/admin/auth", adminAuthRoutes);     
-app.use("/api/admin", adminUserRoutes);    
-app.use("/api/admin", adminWebsiteRoutes); 
+app.use("/api/admin/auth", adminAuthRoutes);
+app.use("/api/admin", adminUserRoutes);
+app.use("/api/admin", adminWebsiteRoutes);
