@@ -1,26 +1,11 @@
-// ✅ Correct import (amazon-paapi package export structure)
-const {
-  ApiClient,
-  DefaultApi,
-  SearchItemsRequest,
-  SearchItemsResponse,
-  GetItemsRequest,
-  GetItemsResponse,
-} = require("amazon-paapi");
-
-// ✅ Configure client
-const client = ApiClient.instance;
-client.accessKey = process.env.AMAZON_ACCESS_KEY;
-client.secretKey = process.env.AMAZON_SECRET_KEY;
-client.host = process.env.AMAZON_HOST;
-client.region = process.env.AMAZON_REGION;
-
-// ✅ Initialize API object
-const api = new DefaultApi();
+// ✅ Import amazon-paapi package
+const amazonPaapi = require('amazon-paapi');
 
 // (NO CHANGES) Your trending keyword list
 const commonKeywordsIndia = [
   "Smart TV 4K",
+  "Electric Heater",
+  "Air Purifier",
   "Wireless Earbuds",
   "True Wireless Earphones",
   "Portable SSD",
@@ -152,55 +137,77 @@ const commonKeywordsIndia = [
 // ✅ Trending Search API
 exports.searchTrendingIndia = async (req, res) => {
   try {
-    let allItems = [];
-
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
+
     const keywordsToSearch = commonKeywordsIndia.slice(
       (page - 1) * limit,
       page * limit
     );
 
+    const allItems = [];
+
+    const commonParameters = {
+      AccessKey: process.env.AMAZON_ACCESS_KEY,
+      SecretKey: process.env.AMAZON_SECRET_KEY,
+      PartnerTag: process.env.AMAZON_PARTNER_TAG,
+      PartnerType: "Associates",
+      Marketplace: "www.amazon.in", // 🔥 Fixed
+    };
+
     for (const keyword of keywordsToSearch) {
-      const request = new SearchItemsRequest();
-      request["PartnerTag"] = process.env.AMAZON_PARTNER_TAG;
-      request["PartnerType"] = "Associates";
-      request["Keywords"] = keyword;
-      request["SearchIndex"] = "All";
-      request["ItemCount"] = 2;
-      request["Resources"] = [
-        "Images.Primary.Medium",
-        "ItemInfo.Title",
-        "Offers.Listings.Price",
-        "Offers.Listings.SavingBasis",
-      ];
-
       try {
-        const data = await api.searchItems(request);
-        const response = SearchItemsResponse.constructFromObject(data);
+        const requestParameters = {
+          Keywords: keyword,
+          SearchIndex: "All",
+          ItemCount: 10, // 🔥 FIXED
+          Resources: [
+            "Images.Primary.Medium",
+            "ItemInfo.Title",
+            "ItemInfo.ProductInfo",
+            "ItemInfo.Classifications",
+            "Offers.Listings.Price",
+            "Offers.Listings.SavingBasis",
+            "BrowseNodeInfo.BrowseNodes",
+          ],
+        };
 
-        if (response.SearchResult?.Items) {
-          const mapped = response.SearchResult.Items.map((item) => ({
-            Keyword: keyword,
-            ASIN: item.ASIN,
-            Title: item.ItemInfo?.Title?.DisplayValue,
-            URL: item.DetailPageURL,
-            Image: item.Images?.Primary?.Medium?.URL,
-            Price: item.Offers?.Listings?.[0]?.Price?.DisplayAmount || null,
-          }));
+        const data = await amazonPaapi.SearchItems(commonParameters, requestParameters);
 
-          allItems.push(...mapped);
+        // No items case
+        if (!data?.SearchResult?.Items) {
+          console.log("❌ No items returned for:", keyword);
+          continue;
         }
+
+        const mapped = data.SearchResult.Items.map((item) => ({
+          Keyword: keyword,
+          ASIN: item.ASIN,
+          Title: item.ItemInfo?.Title?.DisplayValue || null,
+          URL: item.DetailPageURL || null,
+          Image: item.Images?.Primary?.Medium?.URL || null,
+          Price: item.Offers?.Listings?.[0]?.Price?.DisplayAmount || null,
+        }));
+
+        allItems.push(...mapped);
       } catch (err) {
-        console.warn(`Keyword "${keyword}" failed:`, err.message);
+        console.log("⚠ Amazon API failed for:", keyword, err.message);
       }
     }
 
-    res.json({ success: true, page, limit, items: allItems });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    return res.json({
+      success: true,
+      items: allItems,
+      page,
+      limit,
+      count: allItems.length,
+    });
+  } catch (err) {
+    console.log("🔥 searchTrendingIndia crashed:", err.message);
+    return res.json({ success: false, items: [] });
   }
 };
+
 
 // ✅ Get Single Product by ASIN
 exports.getItem = async (req, res) => {
@@ -225,3 +232,6 @@ exports.getItem = async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   }
 };
+
+module.exports.commonKeywordsIndia = commonKeywordsIndia;
+module.exports.searchTrendingIndia = exports.searchTrendingIndia;
