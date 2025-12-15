@@ -7,9 +7,11 @@ const AgodaHotel = require("../models/AgodaHotel"); // <-- DB model (collection:
 
 const router = express.Router();
 
-const AGODA_ENDPOINT = "http://affiliateapi7643.agoda.com/affiliateservice/lt_v1";
+const AGODA_ENDPOINT =
+  "http://affiliateapi7643.agoda.com/affiliateservice/lt_v1";
 const SITE_ID = process.env.AGODA_SITE_ID || "1953959";
-const API_KEY = process.env.AGODA_API_KEY || "a1b3fe31-8469-46df-8877-364e9677aa80";
+const API_KEY =
+  process.env.AGODA_API_KEY || "a1b3fe31-8469-46df-8877-364e9677aa80";
 
 // CONFIG
 const DEFAULT_CONCURRENCY = 10;
@@ -25,8 +27,8 @@ function buildBodyWithDates(cityId, checkInDate, checkOutDate) {
     criteria: {
       cityId: Number(cityId),
       checkInDate,
-      checkOutDate
-    }
+      checkOutDate,
+    },
   };
 }
 
@@ -37,22 +39,37 @@ async function doRequestWithRetry(body, headers, maxRetries = MAX_RETRIES) {
     try {
       const resp = await axios.post(AGODA_ENDPOINT, body, {
         headers,
-        timeout: REQUEST_TIMEOUT
+        timeout: REQUEST_TIMEOUT,
       });
       return { ok: true, data: resp.data };
     } catch (err) {
       attempt++;
       const status = err.response?.status;
       const respData = err.response?.data;
-      console.warn("agoda-request-error", { status, cityId: body?.criteria?.cityId, attempt, respData });
+      console.warn("agoda-request-error", {
+        status,
+        cityId: body?.criteria?.cityId,
+        attempt,
+        respData,
+      });
 
       // if 4xx non-429 -> don't keep hammering; return the response data for inspection
       if (status && status >= 400 && status < 500 && status !== 429) {
-        return { ok: false, error: err.message || "4xx error", status, respData };
+        return {
+          ok: false,
+          error: err.message || "4xx error",
+          status,
+          respData,
+        };
       }
 
       if (attempt > maxRetries) {
-        return { ok: false, error: err.message || "failed after retries", status: status || null, respData };
+        return {
+          ok: false,
+          error: err.message || "failed after retries",
+          status: status || null,
+          respData,
+        };
       }
 
       const wait = BACKOFF_BASE * Math.pow(2, attempt - 1);
@@ -66,16 +83,18 @@ async function doRequestWithRetry(body, headers, maxRetries = MAX_RETRIES) {
 async function promisePool(tasks, concurrency) {
   const results = [];
   let i = 0;
-  const runners = new Array(Math.min(concurrency, tasks.length)).fill(null).map(async () => {
-    while (i < tasks.length) {
-      const idx = i++;
-      try {
-        results[idx] = await tasks[idx]();
-      } catch (e) {
-        results[idx] = { error: e.message || String(e) };
+  const runners = new Array(Math.min(concurrency, tasks.length))
+    .fill(null)
+    .map(async () => {
+      while (i < tasks.length) {
+        const idx = i++;
+        try {
+          results[idx] = await tasks[idx]();
+        } catch (e) {
+          results[idx] = { error: e.message || String(e) };
+        }
       }
-    }
-  });
+    });
   await Promise.all(runners);
   return results;
 }
@@ -85,7 +104,13 @@ async function promisePool(tasks, concurrency) {
  * Reuses the same logic as the route to fetch & return results for a single page.
  * Returns an object identical to what route would include in `data`.
  */
-async function processPage({ page = 1, perPage = 50, concurrency = DEFAULT_CONCURRENCY, checkInDate, checkOutDate }) {
+async function processPage({
+  page = 1,
+  perPage = 50,
+  concurrency = DEFAULT_CONCURRENCY,
+  checkInDate,
+  checkOutDate,
+}) {
   // bounds
   const totalCities = cityData.city_ids.length;
   const totalPages = Math.ceil(totalCities / perPage);
@@ -99,7 +124,7 @@ async function processPage({ page = 1, perPage = 50, concurrency = DEFAULT_CONCU
 
   const headers = {
     "Content-Type": "application/json",
-    "Authorization": `${SITE_ID}:${API_KEY}`
+    Authorization: `${SITE_ID}:${API_KEY}`,
   };
 
   // tasks for this page
@@ -110,7 +135,12 @@ async function processPage({ page = 1, perPage = 50, concurrency = DEFAULT_CONCU
     if (result.ok) {
       return { cityId, hotels: result.data?.results || result.data };
     } else {
-      return { cityId, error: result.error, status: result.status || null, details: result.respData || null };
+      return {
+        cityId,
+        error: result.error,
+        status: result.status || null,
+        details: result.respData || null,
+      };
     }
   });
 
@@ -122,7 +152,7 @@ async function processPage({ page = 1, perPage = 50, concurrency = DEFAULT_CONCU
     perPage,
     totalPages,
     concurrency,
-    data: results
+    data: results,
   };
 }
 
@@ -158,15 +188,15 @@ async function savePageToDb(pageData) {
         latitude: h.latitude,
         longitude: h.longitude,
         raw: h,
-        lastFetchedAt: new Date()
+        lastFetchedAt: new Date(),
       };
 
       bulkOps.push({
         updateOne: {
           filter: { cityId, hotelId },
           update: { $set: updateDoc, $setOnInsert: { createdAt: new Date() } },
-          upsert: true
-        }
+          upsert: true,
+        },
       });
     }
   }
@@ -196,16 +226,27 @@ router.get("/agoda/paginated", async (req, res) => {
   try {
     const page = Math.max(1, Number(req.query.page) || 1);
     const perPage = Math.max(1, Number(req.query.perPage) || 50);
-    const concurrency = Math.max(1, Number(req.query.concurrency) || DEFAULT_CONCURRENCY);
+    const concurrency = Math.max(
+      1,
+      Number(req.query.concurrency) || DEFAULT_CONCURRENCY
+    );
 
     // default dates: today and tomorrow
     const today = new Date().toISOString().slice(0, 10);
-    const tomorrow = new Date(Date.now() + 24 * 3600 * 1000).toISOString().slice(0, 10);
+    const tomorrow = new Date(Date.now() + 24 * 3600 * 1000)
+      .toISOString()
+      .slice(0, 10);
 
     const checkInDate = req.query.checkInDate || today;
     const checkOutDate = req.query.checkOutDate || tomorrow;
 
-    const pageResult = await processPage({ page, perPage, concurrency, checkInDate, checkOutDate });
+    const pageResult = await processPage({
+      page,
+      perPage,
+      concurrency,
+      checkInDate,
+      checkOutDate,
+    });
 
     // pageResult already contains totalCities, page, perPage, totalPages, concurrency, data
     return res.json({
@@ -216,7 +257,7 @@ router.get("/agoda/paginated", async (req, res) => {
       concurrency: pageResult.concurrency,
       checkInDate,
       checkOutDate,
-      data: pageResult.data
+      data: pageResult.data,
     });
   } catch (err) {
     console.error("paginated-error:", err);
@@ -231,20 +272,27 @@ router.get("/agoda/manual-sync", async (req, res) => {
   try {
     const page = Math.max(1, Number(req.query.page) || 1);
     const perPage = Math.max(1, Number(req.query.perPage) || 50);
-    const concurrency = Math.max(1, Number(req.query.concurrency) || DEFAULT_CONCURRENCY);
+    const concurrency = Math.max(
+      1,
+      Number(req.query.concurrency) || DEFAULT_CONCURRENCY
+    );
 
     // default check-in / out
     const today = new Date().toISOString().slice(0, 10);
-    const tomorrow = new Date(Date.now() + 24 * 3600 * 1000).toISOString().slice(0, 10);
+    const tomorrow = new Date(Date.now() + 24 * 3600 * 1000)
+      .toISOString()
+      .slice(0, 10);
 
-    console.log(`[ManualSync] Triggered → page=${page}, perPage=${perPage}, concurrency=${concurrency}`);
+    console.log(
+      `[ManualSync] Triggered → page=${page}, perPage=${perPage}, concurrency=${concurrency}`
+    );
 
     const result = await processPage({
       page,
       perPage,
       concurrency,
       checkInDate: today,
-      checkOutDate: tomorrow
+      checkOutDate: tomorrow,
     });
 
     let saveSummary = { ok: true, operations: 0 };
@@ -266,7 +314,7 @@ router.get("/agoda/manual-sync", async (req, res) => {
       totalPages: result.totalPages,
       concurrency: result.concurrency,
       saved: saveSummary,
-      data: result.data
+      data: result.data,
     });
   } catch (err) {
     console.error("[ManualSync Error]:", err);
@@ -290,11 +338,14 @@ router.get("/agoda/db-hotels", async (req, res) => {
       minStar,
       minScore,
       freeWifi,
+      lat,
+      lng,
+      radius,
       page = 1,
       perPage = 20,
       sortBy = "newest",
       sortDir = "desc",
-      fields // optional comma-separated fields to return
+      fields,
     } = req.query;
 
     const p = Math.max(1, Number(page));
@@ -305,8 +356,16 @@ router.get("/agoda/db-hotels", async (req, res) => {
     const filter = {};
     if (cityId) filter.cityId = Number(cityId);
     if (hotelId) filter.hotelId = Number(hotelId);
-    if (minPrice) filter.dailyRate = { ...(filter.dailyRate || {}), $gte: Number(minPrice) };
-    if (maxPrice) filter.dailyRate = { ...(filter.dailyRate || {}), $lte: Number(maxPrice) };
+    if (minPrice)
+      filter.dailyRate = {
+        ...(filter.dailyRate || {}),
+        $gte: Number(minPrice),
+      };
+    if (maxPrice)
+      filter.dailyRate = {
+        ...(filter.dailyRate || {}),
+        $lte: Number(maxPrice),
+      };
     if (minStar) filter.starRating = { $gte: Number(minStar) };
     if (minScore) filter.reviewScore = { $gte: Number(minScore) };
     if (typeof freeWifi !== "undefined") {
@@ -317,11 +376,32 @@ router.get("/agoda/db-hotels", async (req, res) => {
       // simple case-insensitive substring search on hotelName
       filter.hotelName = { $regex: q, $options: "i" };
     }
+    // ---------------- GEO FILTER (TEMP / WORKING) ----------------
+    if (lat && lng && radius) {
+      const latNum = Number(lat);
+      const lngNum = Number(lng);
+      const rKm = Number(radius);
+
+      // approx: 1 degree ~ 111 km
+      const delta = rKm / 111;
+
+      filter.latitude = {
+        $gte: latNum - delta,
+        $lte: latNum + delta,
+      };
+
+      filter.longitude = {
+        $gte: lngNum - delta,
+        $lte: lngNum + delta,
+      };
+    }
 
     // Projection
     const projection = {};
     if (fields) {
-      fields.split(",").forEach(f => { projection[f.trim()] = 1; });
+      fields.split(",").forEach((f) => {
+        projection[f.trim()] = 1;
+      });
     }
 
     // Sorting
@@ -329,14 +409,18 @@ router.get("/agoda/db-hotels", async (req, res) => {
       price: { dailyRate: sortDir === "asc" ? 1 : -1 },
       score: { reviewScore: sortDir === "asc" ? 1 : -1 },
       rating: { starRating: sortDir === "asc" ? 1 : -1 },
-      newest: { lastFetchedAt: sortDir === "asc" ? 1 : -1 }
+      newest: { lastFetchedAt: sortDir === "asc" ? 1 : -1 },
     };
     const sort = sortMap[sortBy] || sortMap.newest;
 
     // Execute queries in parallel
     const [total, data] = await Promise.all([
       AgodaHotel.countDocuments(filter),
-      AgodaHotel.find(filter, projection).sort(sort).skip(skip).limit(limit).lean()
+      AgodaHotel.find(filter, projection)
+        .sort(sort)
+        .skip(skip)
+        .limit(limit)
+        .lean(),
     ]);
 
     const totalPages = Math.ceil(total / limit) || 1;
@@ -347,7 +431,7 @@ router.get("/agoda/db-hotels", async (req, res) => {
       page: p,
       perPage: limit,
       totalPages,
-      data
+      data,
     });
   } catch (err) {
     console.error("db-hotels-error:", err);
@@ -360,9 +444,15 @@ router.get("/agoda/db-hotels", async (req, res) => {
 router.get("/agoda/db-hotel", async (req, res) => {
   try {
     const { cityId, hotelId } = req.query;
-    if (!cityId || !hotelId) return res.status(400).json({ ok: false, error: "cityId and hotelId required" });
+    if (!cityId || !hotelId)
+      return res
+        .status(400)
+        .json({ ok: false, error: "cityId and hotelId required" });
 
-    const doc = await AgodaHotel.findOne({ cityId: Number(cityId), hotelId: Number(hotelId) }).lean();
+    const doc = await AgodaHotel.findOne({
+      cityId: Number(cityId),
+      hotelId: Number(hotelId),
+    }).lean();
     if (!doc) return res.status(404).json({ ok: false, error: "not found" });
     return res.json({ ok: true, data: doc });
   } catch (err) {
@@ -370,7 +460,6 @@ router.get("/agoda/db-hotel", async (req, res) => {
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
-
 
 module.exports = router;
 
@@ -385,55 +474,81 @@ module.exports = router;
 const CRON_ENABLED = process.env.AGODA_CRON_ENABLED !== "false"; // default true
 const CRON_PER_PAGE = Number(process.env.AGODA_CRON_PER_PAGE) || 200;
 const CRON_CONCURRENCY = Number(process.env.AGODA_CRON_CONCURRENCY) || 8;
-const CRON_PAUSE_BETWEEN_PAGES_MS = Number(process.env.AGODA_CRON_PAUSE_MS) || 250; // polite pause
+const CRON_PAUSE_BETWEEN_PAGES_MS =
+  Number(process.env.AGODA_CRON_PAUSE_MS) || 250; // polite pause
 
 if (CRON_ENABLED) {
   // schedule: at minute 0 of every 8th hour (0 */8 * * *)
-  cron.schedule("0 */8 * * *", async () => {
-    console.log(`[AgodaCron] starting sync @ ${new Date().toISOString()}`);
-    try {
-      const totalCities = cityData.city_ids.length;
-      const totalPages = Math.ceil(totalCities / CRON_PER_PAGE);
-      console.log(`[AgodaCron] totalCities=${totalCities}, totalPages=${totalPages}, perPage=${CRON_PER_PAGE}, concurrency=${CRON_CONCURRENCY}`);
+  cron.schedule(
+    "0 */8 * * *",
+    async () => {
+      console.log(`[AgodaCron] starting sync @ ${new Date().toISOString()}`);
+      try {
+        const totalCities = cityData.city_ids.length;
+        const totalPages = Math.ceil(totalCities / CRON_PER_PAGE);
+        console.log(
+          `[AgodaCron] totalCities=${totalCities}, totalPages=${totalPages}, perPage=${CRON_PER_PAGE}, concurrency=${CRON_CONCURRENCY}`
+        );
 
-      // use default dates (today/tomorrow)
-      const today = new Date().toISOString().slice(0, 10);
-      const tomorrow = new Date(Date.now() + 24 * 3600 * 1000).toISOString().slice(0, 10);
+        // use default dates (today/tomorrow)
+        const today = new Date().toISOString().slice(0, 10);
+        const tomorrow = new Date(Date.now() + 24 * 3600 * 1000)
+          .toISOString()
+          .slice(0, 10);
 
-      for (let p = 1; p <= totalPages; p++) {
-        const startTs = Date.now();
-        console.log(`[AgodaCron] processing page ${p}/${totalPages} ...`);
-        try {
-          const r = await processPage({ page: p, perPage: CRON_PER_PAGE, concurrency: CRON_CONCURRENCY, checkInDate: today, checkOutDate: tomorrow });
-          // basic stats
-          const okCount = (r.data || []).filter(d => d.hotels).length;
-          const errCount = (r.data || []).filter(d => d.error).length;
-          console.log(`[AgodaCron] page ${p} fetched — ok=${okCount}, errors=${errCount}, timeMs=${Date.now() - startTs}`);
-
-          // save to DB
+        for (let p = 1; p <= totalPages; p++) {
+          const startTs = Date.now();
+          console.log(`[AgodaCron] processing page ${p}/${totalPages} ...`);
           try {
-            const saveRes = await savePageToDb(r.data || []);
-            console.log(`[AgodaCron] page ${p} saved — ops=${saveRes.operations || 0}`);
-          } catch (saveErr) {
-            console.error(`[AgodaCron] save page ${p} failed:`, saveErr);
+            const r = await processPage({
+              page: p,
+              perPage: CRON_PER_PAGE,
+              concurrency: CRON_CONCURRENCY,
+              checkInDate: today,
+              checkOutDate: tomorrow,
+            });
+            // basic stats
+            const okCount = (r.data || []).filter((d) => d.hotels).length;
+            const errCount = (r.data || []).filter((d) => d.error).length;
+            console.log(
+              `[AgodaCron] page ${p} fetched — ok=${okCount}, errors=${errCount}, timeMs=${
+                Date.now() - startTs
+              }`
+            );
+
+            // save to DB
+            try {
+              const saveRes = await savePageToDb(r.data || []);
+              console.log(
+                `[AgodaCron] page ${p} saved — ops=${saveRes.operations || 0}`
+              );
+            } catch (saveErr) {
+              console.error(`[AgodaCron] save page ${p} failed:`, saveErr);
+            }
+          } catch (pageErr) {
+            console.error(`[AgodaCron] page ${p} failed:`, pageErr);
           }
-        } catch (pageErr) {
-          console.error(`[AgodaCron] page ${p} failed:`, pageErr);
+          // polite pause between pages
+          await new Promise((r) => setTimeout(r, CRON_PAUSE_BETWEEN_PAGES_MS));
         }
-        // polite pause between pages
-        await new Promise((r) => setTimeout(r, CRON_PAUSE_BETWEEN_PAGES_MS));
+
+        console.log(
+          `[AgodaCron] finished all pages @ ${new Date().toISOString()}`
+        );
+      } catch (e) {
+        console.error("[AgodaCron] unexpected error:", e);
       }
-
-      console.log(`[AgodaCron] finished all pages @ ${new Date().toISOString()}`);
-    } catch (e) {
-      console.error("[AgodaCron] unexpected error:", e);
+    },
+    {
+      scheduled: true,
+      timezone: "Asia/Kolkata",
     }
-  }, {
-    scheduled: true,
-    timezone: "Asia/Kolkata"
-  });
+  );
 
-  console.log("[AgodaCron] scheduled (every 8 hours) — AGODA_CRON_ENABLED=", CRON_ENABLED);
+  console.log(
+    "[AgodaCron] scheduled (every 8 hours) — AGODA_CRON_ENABLED=",
+    CRON_ENABLED
+  );
 } else {
   console.log("[AgodaCron] disabled via AGODA_CRON_ENABLED=false");
 }
