@@ -43,7 +43,9 @@ async function fetchLMDOffers() {
     status: "success",
     message: "",
   };
+
   console.log("▶ fetchLMDOffers invoked:", new Date().toISOString());
+
   if (!LMD_API || !LMD_API.trim()) {
     logData.status = "failed";
     logData.message = "Missing LMD_API";
@@ -75,11 +77,12 @@ async function fetchLMDOffers() {
 
     const offers = Array.isArray(res.data.offers) ? res.data.offers : [];
     logData.totalFetched = offers.length;
+
     console.log(`   Offers returned: ${offers.length}`);
+
     if (offers.length === 0) {
       logData.message = "No offers returned";
       await safeCreateLog(logData);
-      // still attempt moving expired offers below
     } else {
       const processedOffers = offers.map((offer) => ({
         lmd_id: Number(offer.lmd_id),
@@ -99,7 +102,7 @@ async function fetchLMDOffers() {
         featured: String(offer.featured).toLowerCase() === "yes",
         publisher_exclusive: offer.publisher_exclusive || "N",
         url: offer.url || "",
-        smartlink: offer.smartlink || "",
+        smartlink: offer.smartLink || "", // ✅ case fix
         image_url: offer.image_url || "",
         type: offer.type || "",
         offer: offer.offer || "",
@@ -109,35 +112,35 @@ async function fetchLMDOffers() {
         end_date: parseDate(offer.end_date),
       }));
 
-      const ids = processedOffers.map((o) => o.lmd_id);
-      const existing = await LmdOffer.find(
-        { lmd_id: { $in: ids } },
-        "lmd_id"
-      ).lean();
-      const existingIds = new Set(existing.map((e) => e.lmd_id));
-      const uniqueOffers = processedOffers.filter(
-        (offer) => !existingIds.has(offer.lmd_id)
-      );
+      const ops = processedOffers.map((offer) => ({
+        updateOne: {
+          filter: { lmd_id: offer.lmd_id },
+          update: { $set: offer },
+          upsert: true,
+        },
+      }));
 
-      logData.inserted = uniqueOffers.length;
-      if (uniqueOffers.length > 0) {
-        try {
-          await LmdOffer.insertMany(uniqueOffers, { ordered: false });
-          logData.message = `${uniqueOffers.length} offers inserted`;
-          console.log(`✅ ${uniqueOffers.length} inserted`);
-        } catch (insErr) {
-          logData.status = "partial";
-          logData.message = `insertMany error: ${insErr.message || "unknown"}`;
-          console.error("❌ insertMany error:", insErr);
-        }
-      } else {
-        logData.message = "No new offers to insert";
+      try {
+        const bulkRes = await LmdOffer.bulkWrite(ops, { ordered: false });
+
+        const upserted =
+          bulkRes.upsertedCount ||
+          bulkRes.nUpserted ||
+          0;
+
+        logData.inserted = upserted;
+        logData.message = `Sync completed. Upserted: ${upserted}`;
+        console.log("✅ Bulk upsert completed:", upserted);
+      } catch (bulkErr) {
+        logData.status = "partial";
+        logData.message = `bulkWrite error: ${bulkErr.message || "unknown"}`;
+        console.error("❌ bulkWrite error:", bulkErr);
       }
 
       await safeCreateLog(logData);
     }
 
-    // Move expired offers after sync
+    // move expired offers after sync
     try {
       const moveRes = await moveExpiredOffers();
       console.log("▶ moveExpiredOffers result:", moveRes);
@@ -151,6 +154,7 @@ async function fetchLMDOffers() {
     console.error("❌ LMD Fetch Error:", err);
   }
 }
+
 
 async function safeCreateLog(data) {
   try {
