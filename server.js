@@ -5,7 +5,7 @@ const cors = require("cors");
 const path = require("path");
 const axios = require('axios');
 
-const { getAgodaConnection } = require("./db/agodaDb");
+const { getAgodaConnection } = require("./db/agodaDB");
 const authRoutes = require("./routes/authRoutes");
 const contactRoutes = require("./routes/contactRoutes");
 const advertiseRoutes = require("./routes/advertisementRoutes");
