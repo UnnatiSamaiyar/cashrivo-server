@@ -3,7 +3,8 @@ const express = require("express");
 const axios = require("axios");
 const cityData = require("../data/city_ids.json");
 const cron = require("node-cron");
-const AgodaHotel = require("../models/AgodaHotel"); // <-- DB model (collection: "agoda_hotels")
+const AgodaHotel = require("../models/AgodaHotel"); // <-- now uses ONLY Agoda DB connection
+const { ensureAgodaConnected } = require("../db/agodaDb"); // <-- ensure Agoda DB is connected
 
 const router = express.Router();
 
@@ -162,6 +163,9 @@ async function processPage({
  * Returns { ok: true, operations: N } or throws.
  */
 async function savePageToDb(pageData) {
+  // Ensure Agoda DB connection is ready (MONGO_AGODA_DB_URI only)
+  await ensureAgodaConnected();
+
   const bulkOps = [];
 
   for (const item of pageData) {
@@ -329,6 +333,9 @@ router.get("/agoda/manual-sync", async (req, res) => {
 // Example: /agoda/db-hotels?cityId=11361&page=1&perPage=20&minPrice=100&sortBy=price&sortDir=asc
 router.get("/agoda/db-hotels", async (req, res) => {
   try {
+    // Ensure Agoda DB connection is ready (MONGO_AGODA_DB_URI only)
+    await ensureAgodaConnected();
+
     const {
       q,
       cityId,
@@ -443,6 +450,9 @@ router.get("/agoda/db-hotels", async (req, res) => {
 // /agoda/db-hotel?cityId=11361&hotelId=3216617
 router.get("/agoda/db-hotel", async (req, res) => {
   try {
+    // Ensure Agoda DB connection is ready (MONGO_AGODA_DB_URI only)
+    await ensureAgodaConnected();
+
     const { cityId, hotelId } = req.query;
     if (!cityId || !hotelId)
       return res
@@ -464,91 +474,141 @@ router.get("/agoda/db-hotel", async (req, res) => {
 module.exports = router;
 
 /* =========================
-   CRON: run automatic sync
+   CRON: run automatic sync (LOW SERVER USAGE)
    =========================
-   - Runs every 8 hours in Asia/Kolkata timezone
-   - Processes pages sequentially in batches to avoid one huge concurrent job
-   - Default perPage=200, concurrency=8 (tweak via env if needed)
+   Goal:
+   - Run once every 2 days (48 hours)
+   - Keep CPU/RAM low
+   - Avoid overlapping runs
+   - Process pages sequentially with low concurrency
 */
 
 const CRON_ENABLED = process.env.AGODA_CRON_ENABLED !== "false"; // default true
-const CRON_PER_PAGE = Number(process.env.AGODA_CRON_PER_PAGE) || 200;
-const CRON_CONCURRENCY = Number(process.env.AGODA_CRON_CONCURRENCY) || 8;
+
+// Keep these conservative for low server usage:
+const CRON_PER_PAGE = Number(process.env.AGODA_CRON_PER_PAGE) || 100; // lower = less memory spike
+const CRON_CONCURRENCY = Number(process.env.AGODA_CRON_CONCURRENCY) || 2; // low CPU/network load
 const CRON_PAUSE_BETWEEN_PAGES_MS =
-  Number(process.env.AGODA_CRON_PAUSE_MS) || 250; // polite pause
+  Number(process.env.AGODA_CRON_PAUSE_MS) || 1500; // bigger pause = less load
 
-// if (CRON_ENABLED) {
-//   // schedule: at minute 0 of every 8th hour (0 */8 * * *)
-//   cron.schedule(
-//     "0 */8 * * *",
-//     async () => {
-//       console.log(`[AgodaCron] starting sync @ ${new Date().toISOString()}`);
-//       try {
-//         const totalCities = cityData.city_ids.length;
-//         const totalPages = Math.ceil(totalCities / CRON_PER_PAGE);
-//         console.log(
-//           `[AgodaCron] totalCities=${totalCities}, totalPages=${totalPages}, perPage=${CRON_PER_PAGE}, concurrency=${CRON_CONCURRENCY}`
-//         );
+// Optional: hard stop after X minutes (prevents runaway jobs)
+const CRON_MAX_RUNTIME_MIN =
+  Number(process.env.AGODA_CRON_MAX_RUNTIME_MIN) || 180; // 3 hours default
 
-//         // use default dates (today/tomorrow)
-//         const today = new Date().toISOString().slice(0, 10);
-//         const tomorrow = new Date(Date.now() + 24 * 3600 * 1000)
-//           .toISOString()
-//           .slice(0, 10);
+// ✅ Simple in-memory lock to prevent overlapping cron runs
+let AGODA_CRON_IS_RUNNING = false;
 
-//         for (let p = 1; p <= totalPages; p++) {
-//           const startTs = Date.now();
-//           console.log(`[AgodaCron] processing page ${p}/${totalPages} ...`);
-//           try {
-//             const r = await processPage({
-//               page: p,
-//               perPage: CRON_PER_PAGE,
-//               concurrency: CRON_CONCURRENCY,
-//               checkInDate: today,
-//               checkOutDate: tomorrow,
-//             });
-//             // basic stats
-//             const okCount = (r.data || []).filter((d) => d.hotels).length;
-//             const errCount = (r.data || []).filter((d) => d.error).length;
-//             console.log(
-//               `[AgodaCron] page ${p} fetched — ok=${okCount}, errors=${errCount}, timeMs=${
-//                 Date.now() - startTs
-//               }`
-//             );
+// ✅ Every 2 days at 03:30 AM Asia/Kolkata (low traffic)
+// Cron format: minute hour day-of-month month day-of-week
+// "30 3 */2 * *" = 03:30 on every 2nd day of month
+// NOTE: This is "every 2 days" by date (1,3,5...) not strict 48h after last run.
+// For most use-cases, this is perfectly fine and low overhead.
+const CRON_EXPR = process.env.AGODA_CRON_EXPR || "30 3 */2 * *";
 
-//             // save to DB
-//             try {
-//               const saveRes = await savePageToDb(r.data || []);
-//               console.log(
-//                 `[AgodaCron] page ${p} saved — ops=${saveRes.operations || 0}`
-//               );
-//             } catch (saveErr) {
-//               console.error(`[AgodaCron] save page ${p} failed:`, saveErr);
-//             }
-//           } catch (pageErr) {
-//             console.error(`[AgodaCron] page ${p} failed:`, pageErr);
-//           }
-//           // polite pause between pages
-//           await new Promise((r) => setTimeout(r, CRON_PAUSE_BETWEEN_PAGES_MS));
-//         }
+if (CRON_ENABLED) {
+  cron.schedule(
+    CRON_EXPR,
+    async () => {
+      if (AGODA_CRON_IS_RUNNING) {
+        console.log("[AgodaCron] skipped (already running)");
+        return;
+      }
 
-//         console.log(
-//           `[AgodaCron] finished all pages @ ${new Date().toISOString()}`
-//         );
-//       } catch (e) {
-//         console.error("[AgodaCron] unexpected error:", e);
-//       }
-//     },
-//     {
-//       scheduled: true,
-//       timezone: "Asia/Kolkata",
-//     }
-//   );
+      AGODA_CRON_IS_RUNNING = true;
 
-//   console.log(
-//     "[AgodaCron] scheduled (every 8 hours) — AGODA_CRON_ENABLED=",
-//     CRON_ENABLED
-//   );
-// } else {
-//   console.log("[AgodaCron] disabled via AGODA_CRON_ENABLED=false");
-// }
+      const startedAt = Date.now();
+      const deadlineMs = CRON_MAX_RUNTIME_MIN * 60 * 1000;
+
+      console.log(
+        `[AgodaCron] starting sync @ ${new Date().toISOString()} | expr=${CRON_EXPR} | perPage=${CRON_PER_PAGE} | concurrency=${CRON_CONCURRENCY}`
+      );
+
+      try {
+        const totalCities = cityData.city_ids.length;
+        const totalPages = Math.ceil(totalCities / CRON_PER_PAGE);
+
+        console.log(
+          `[AgodaCron] totalCities=${totalCities}, totalPages=${totalPages}, perPage=${CRON_PER_PAGE}, concurrency=${CRON_CONCURRENCY}, pauseMs=${CRON_PAUSE_BETWEEN_PAGES_MS}`
+        );
+
+        // default dates (today/tomorrow)
+        const today = new Date().toISOString().slice(0, 10);
+        const tomorrow = new Date(Date.now() + 24 * 3600 * 1000)
+          .toISOString()
+          .slice(0, 10);
+
+        for (let p = 1; p <= totalPages; p++) {
+          // ✅ Hard runtime cutoff (low server risk)
+          if (Date.now() - startedAt > deadlineMs) {
+            console.warn(
+              `[AgodaCron] stopped due to max runtime limit (${CRON_MAX_RUNTIME_MIN} min). lastPage=${
+                p - 1
+              }/${totalPages}`
+            );
+            break;
+          }
+
+          const startTs = Date.now();
+          console.log(`[AgodaCron] processing page ${p}/${totalPages} ...`);
+
+          try {
+            const r = await processPage({
+              page: p,
+              perPage: CRON_PER_PAGE,
+              concurrency: CRON_CONCURRENCY,
+              checkInDate: today,
+              checkOutDate: tomorrow,
+            });
+
+            const okCount = (r.data || []).filter((d) => d.hotels).length;
+            const errCount = (r.data || []).filter((d) => d.error).length;
+
+            console.log(
+              `[AgodaCron] page ${p} fetched — ok=${okCount}, errors=${errCount}, timeMs=${
+                Date.now() - startTs
+              }`
+            );
+
+            // ✅ Save to DB (already chunked in savePageToDb)
+            try {
+              const saveRes = await savePageToDb(r.data || []);
+              console.log(
+                `[AgodaCron] page ${p} saved — ops=${saveRes.operations || 0}`
+              );
+            } catch (saveErr) {
+              console.error(`[AgodaCron] save page ${p} failed:`, saveErr);
+            }
+          } catch (pageErr) {
+            console.error(`[AgodaCron] page ${p} failed:`, pageErr);
+          }
+
+          // polite pause between pages (reduces CPU/network spikes)
+          await new Promise((r) => setTimeout(r, CRON_PAUSE_BETWEEN_PAGES_MS));
+        }
+
+        console.log(
+          `[AgodaCron] finished @ ${new Date().toISOString()} | totalTimeMs=${
+            Date.now() - startedAt
+          }`
+        );
+      } catch (e) {
+        console.error("[AgodaCron] unexpected error:", e);
+      } finally {
+        AGODA_CRON_IS_RUNNING = false;
+      }
+    },
+    {
+      scheduled: true,
+      timezone: "Asia/Kolkata",
+    }
+  );
+
+  console.log(
+    "[AgodaCron] scheduled — enabled=true | expr=",
+    CRON_EXPR,
+    "| AGODA_CRON_ENABLED=",
+    CRON_ENABLED
+  );
+} else {
+  console.log("[AgodaCron] disabled via AGODA_CRON_ENABLED=false");
+}

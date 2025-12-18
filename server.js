@@ -5,6 +5,7 @@ const cors = require("cors");
 const path = require("path");
 const axios = require('axios');
 
+const { getAgodaConnection } = require("./db/agodaDb");
 const authRoutes = require("./routes/authRoutes");
 const contactRoutes = require("./routes/contactRoutes");
 const advertiseRoutes = require("./routes/advertisementRoutes");
@@ -123,11 +124,14 @@ mongoose
   })
   .catch((err) => console.error("❌ DB connection failed:", err));
 
+getAgodaConnection();
+
 
 // Admin routes
 const adminAuthRoutes = require("./admin/routes/auth");
 const adminUserRoutes = require("./admin/routes/users");
 const adminWebsiteRoutes = require("./admin/routes/websites");
+
 
 app.use("/api/admin/auth", adminAuthRoutes);
 app.use("/api/admin", adminUserRoutes);
