@@ -1,13 +1,12 @@
+// server/valuedesign/vd.tokenStore.js
 let token = null;
 let tokenCreatedAt = null;
 
-export function setToken(t) {
+exports.setToken = (t) => {
   token = t;
   tokenCreatedAt = new Date();
-}
-export function getToken() {
-  return token;
-}
-export function getTokenMeta() {
-  return { token, tokenCreatedAt };
-}
+};
+
+exports.getToken = () => token;
+
+exports.getTokenMeta = () => ({ token, tokenCreatedAt });

@@ -1,20 +1,23 @@
-    import express from "express";
-import * as c from "./vd.controller.js";
+// server/valuedesign/vd.routes.js
+const express = require("express");
+const c = require("./vd.controller");
 
-const r = express.Router();
+const router = express.Router();
 
 // protect admin endpoints
-r.use((req, res, next) => {
-  if (req.headers["x-admin-key"] !== process.env.ADMIN_PROXY_KEY) return res.status(403).json({ error: "forbidden" });
+router.use((req, res, next) => {
+  if (req.headers["x-admin-key"] !== process.env.ADMIN_PROXY_KEY) {
+    return res.status(403).json({ error: "forbidden" });
+  }
   next();
 });
 
-r.post("/token/generate", c.generateToken);
-r.post("/brand", c.getBrand);
-r.post("/store", c.getStore);
-r.post("/evc", c.getEvc);
-r.post("/evc/status", c.getEvcStatus);
-r.post("/evc/activated", c.getActivatedEvc);
-r.post("/wallet", c.getWallet);
+router.post("/token/generate", c.generateToken);
+router.post("/brand", c.getBrand);
+router.post("/store", c.getStore);
+router.post("/evc", c.getEvc);
+router.post("/evc/status", c.getEvcStatus);
+router.post("/evc/activated", c.getActivatedEvc);
+router.post("/wallet", c.getWallet);
 
-export default r;
+module.exports = router;
