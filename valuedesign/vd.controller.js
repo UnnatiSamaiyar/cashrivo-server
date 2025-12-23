@@ -1,9 +1,12 @@
-import * as vd from "./vd.client.js";
+// server/valuedesign/vd.controller.js
+const vd = require("./vd.client");
 
-export const generateToken = async (req, res) => res.json(await vd.generateToken());
-export const getBrand = async (req, res) => res.json(await vd.getBrand(req.body.BrandCode || ""));
-export const getStore = async (req, res) => res.json(await vd.getStore(req.body.BrandCode || ""));
-export const getEvc = async (req, res) => res.json(await vd.getEvc(req.body));
-export const getEvcStatus = async (req, res) => res.json(await vd.getEvcStatus(req.body.order_id, req.body.request_ref_no));
-export const getActivatedEvc = async (req, res) => res.json(await vd.getActivatedEvc(req.body.order_id, req.body.request_ref_no));
-export const getWallet = async (req, res) => res.json(await vd.getWalletBalance());
+exports.generateToken = async (req, res) => res.json(await vd.generateToken());
+exports.getBrand = async (req, res) => res.json(await vd.getBrand(req.body.BrandCode || ""));
+exports.getStore = async (req, res) => res.json(await vd.getStore(req.body.BrandCode || ""));
+exports.getEvc = async (req, res) => res.json(await vd.getEvc(req.body));
+exports.getEvcStatus = async (req, res) =>
+  res.json(await vd.getEvcStatus(req.body.order_id, req.body.request_ref_no));
+exports.getActivatedEvc = async (req, res) =>
+  res.json(await vd.getActivatedEvc(req.body.order_id, req.body.request_ref_no));
+exports.getWallet = async (req, res) => res.json(await vd.getWalletBalance());
