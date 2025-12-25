@@ -39,23 +39,18 @@ router.post("/token/test", async (req, res) => {
  */
 router.post("/brand/test", async (req, res) => {
   try {
+    const BrandCode = req.body?.BrandCode ?? "";
+
     const response = await axios.post(
       "http://cards.vdwebapi.com/distributor/api-getbrand/",
+      { BrandCode },
       {
-        BrandCode: req.body.BrandCode || "",
-      },
-      {
-        headers: {
-          token: VD_TOKEN,
-        },
+        headers: { token: VD_TOKEN },
         timeout: 15000,
       }
     );
 
-    res.json({
-      success: true,
-      response: response.data,
-    });
+    res.json({ success: true, response: response.data });
   } catch (err) {
     res.status(500).json({
       success: false,
@@ -64,5 +59,6 @@ router.post("/brand/test", async (req, res) => {
     });
   }
 });
+
 
 module.exports = router;
