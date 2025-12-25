@@ -30,7 +30,7 @@ const flipkartRoute = require('./routes/flipkartDealRoute');
 const ajioRoute = require('./routes/ajioDealRoute');
 const lmdCronRoute = require("./routes/linkmydeal");
 const agodaRoute = require('./routes/agoda');
-const vdRoutes = require('./valuedesign/vd.routes');
+const vdTokenTest = require("./valuedesign/vd.token.test");
 
 require('./cron/fetchScheduler');
 
@@ -104,8 +104,7 @@ app.use('/api', shopsyRoute);
 app.use('/api', ajioRoute);
 app.use("/api", lmdCronRoute);
 app.use('/api', agodaRoute);
-app.use("/api/vd", vdRoutes);
-
+app.use("/api/vd", vdTokenTest);
 
 // -----------------------------
 //   ⭐ FIXED: FORCE IPv4 LISTEN
