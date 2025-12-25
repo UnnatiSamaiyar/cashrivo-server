@@ -4,10 +4,10 @@ const axios = require("axios");
 
 const router = express.Router();
 
-// VD Base URL
+// Base
 const VD_BASE = "http://cards.vdwebapi.com/distributor";
 
-// Axios client
+// axios client
 const vd = axios.create({
   baseURL: VD_BASE,
   timeout: 20000,
@@ -18,39 +18,55 @@ const vd = axios.create({
  */
 function pick(obj, keys, fallback = undefined) {
   for (const k of keys) {
-    if (obj && obj[k] !== undefined && obj[k] !== null && obj[k] !== "") return obj[k];
+    if (obj && obj[k] !== undefined && obj[k] !== null) return obj[k];
   }
   return fallback;
 }
 
 function normalizeToken(req) {
-  // Token can come from headers or body
+  // accept: token / Token / x-token / x-vd-token (headers), or token in body
   return (
-    pick(req.headers, ["token", "Token", "x-token", "x-vd-token"]) ||
-    pick(req.body || {}, ["token"])
+    pick(req.headers, ["token", "Token", "x-token", "x-vd-token"], "") ||
+    pick(req.body || {}, ["token"], "")
   );
+}
+
+function mustToken(req, res) {
+  const token = normalizeToken(req);
+  if (!token) {
+    res.status(400).json({
+      success: false,
+      message: "token is required in headers (token) or body (token)",
+    });
+    return null;
+  }
+  return token;
 }
 
 /**
  * 1) Generate Token
- * Spec: POST /api-generatetoken/
+ * POST /api-generatetoken/
  * Headers: username, password
  * Body: { distributor_id }
  */
 router.post("/token", async (req, res) => {
   try {
     const distributor_id = pick(req.body || {}, ["distributor_id", "distributorId"], "");
-
-    const username = pick(req.headers, ["username", "Username", "x-username"]) ||
+    const username =
+      pick(req.headers, ["username", "Username", "x-username"], "") ||
       pick(req.body || {}, ["username"], "");
-    const password = pick(req.headers, ["password", "Password", "x-password"]) ||
+    const password =
+      pick(req.headers, ["password", "Password", "x-password"], "") ||
       pick(req.body || {}, ["password"], "");
 
     if (!distributor_id) {
       return res.status(400).json({ success: false, message: "distributor_id is required" });
     }
     if (!username || !password) {
-      return res.status(400).json({ success: false, message: "username & password are required (in headers or body)" });
+      return res.status(400).json({
+        success: false,
+        message: "username & password are required (in headers or body)",
+      });
     }
 
     const response = await vd.post(
@@ -71,25 +87,17 @@ router.post("/token", async (req, res) => {
 
 /**
  * 2) Get Brands
- * Spec: POST /api-getbrand/
+ * POST /api-getbrand/
  * Headers: token
  * Body: { BrandCode }
  */
 router.post("/brands", async (req, res) => {
   try {
-    const token = normalizeToken(req);
-    if (!token) {
-      return res.status(400).json({ success: false, message: "token is required in headers (token) or body (token)" });
-    }
+    const token = mustToken(req, res);
+    if (!token) return;
 
-    // BrandCode can be "" to fetch list (as per your testing pattern)
-    const BrandCode = pick(req.body || {}, ["BrandCode", "brandCode"], "");
-
-    const response = await vd.post(
-      "/api-getbrand/",
-      { BrandCode },
-      { headers: { token } }
-    );
+    const BrandCode = pick(req.body || {}, ["BrandCode", "brandCode"], ""); // "" allowed
+    const response = await vd.post("/api-getbrand/", { BrandCode }, { headers: { token } });
 
     return res.json({ success: true, response: response.data });
   } catch (err) {
@@ -103,27 +111,17 @@ router.post("/brands", async (req, res) => {
 
 /**
  * 3) Get Store List
- * Spec: POST /api-getstore/
+ * POST /api-getstore/
  * Headers: token
  * Body: { BrandCode }
  */
 router.post("/stores", async (req, res) => {
   try {
-    const token = normalizeToken(req);
-    if (!token) {
-      return res.status(400).json({ success: false, message: "token is required in headers (token) or body (token)" });
-    }
+    const token = mustToken(req, res);
+    if (!token) return;
 
     const BrandCode = pick(req.body || {}, ["BrandCode", "brandCode"], "");
-    if (BrandCode === undefined) {
-      return res.status(400).json({ success: false, message: "BrandCode is required (can be empty string if VD allows)" });
-    }
-
-    const response = await vd.post(
-      "/api-getstore/",
-      { BrandCode },
-      { headers: { token } }
-    );
+    const response = await vd.post("/api-getstore/", { BrandCode }, { headers: { token } });
 
     return res.json({ success: true, response: response.data });
   } catch (err) {
@@ -136,39 +134,36 @@ router.post("/stores", async (req, res) => {
 });
 
 /**
- * 4) Get EVC (Generate Electronic Voucher Code)
- * Spec: POST /api-getevc/
+ * 4) Get EVC (Correct endpoint: /getevc/)
+ * POST /getevc/
  * Headers: token
- * Body: as per spec (order_id, sku_code, distributor_id, no_of_card, amount, receiptNo, curr, firstname, etc.)
- *
- * NOTE: Spec mentions encrypted "payload" in some implementations; here we pass-through raw body.
+ * Body: as per doc fields (order_id, sku_code, distributor_id, no_of_card, amount, receiptNo, curr, firstname, lastname, mobile_no, email, address, city, state, country, pincode?, reqId?)
  */
 router.post("/evc", async (req, res) => {
   try {
-    const token = normalizeToken(req);
-    if (!token) {
-      return res.status(400).json({ success: false, message: "token is required in headers (token) or body (token)" });
-    }
+    const token = mustToken(req, res);
+    if (!token) return;
 
     const body = req.body || {};
-    // Minimal sanity checks (keep it light, you can expand later)
-    const order_id = pick(body, ["order_id", "orderId"], null);
-    const sku_code = pick(body, ["sku_code", "skuCode"], null);
-    const distributor_id = pick(body, ["distributor_id", "distributorId"], null);
 
-    if (!order_id || !sku_code || !distributor_id) {
+    // Minimal required checks (doc)
+    const order_id = pick(body, ["order_id", "orderId"], "");
+    const sku_code = pick(body, ["sku_code", "skuCode"], "");
+    const distributor_id = pick(body, ["distributor_id", "distributorId"], "");
+    const no_of_card = pick(body, ["no_of_card", "noOfCard"], "");
+    const amount = pick(body, ["amount"], "");
+    const receiptNo = pick(body, ["receiptNo", "receipt_no", "receipt"], "");
+    const curr = pick(body, ["curr", "currency", "currency_code"], "");
+
+    if (!order_id || !sku_code || !distributor_id || !no_of_card || !amount || !receiptNo || !curr) {
       return res.status(400).json({
         success: false,
-        message: "order_id, sku_code, distributor_id are required in body",
+        message:
+          "Missing required fields. Need: order_id, sku_code, distributor_id, no_of_card, amount, receiptNo, curr (plus user details fields as per VD).",
       });
     }
 
-    const response = await vd.post(
-      "/api-getevc/",
-      body,
-      { headers: { token } }
-    );
-
+    const response = await vd.post("/getevc/", body, { headers: { token } });
     return res.json({ success: true, response: response.data });
   } catch (err) {
     return res.status(500).json({
@@ -180,21 +175,18 @@ router.post("/evc", async (req, res) => {
 });
 
 /**
- * 5) Get EVC Status
- * Spec: POST /api-getevcstatus/
+ * 5) Get EVC Status (Correct endpoint: /getevcstatus/)
+ * POST /getevcstatus/
  * Headers: token
  * Body: { order_id, request_ref_no }
  */
 router.post("/evc/status", async (req, res) => {
   try {
-    const token = normalizeToken(req);
-    if (!token) {
-      return res.status(400).json({ success: false, message: "token is required in headers (token) or body (token)" });
-    }
+    const token = mustToken(req, res);
+    if (!token) return;
 
-    const body = req.body || {};
-    const order_id = pick(body, ["order_id", "orderId"], "");
-    const request_ref_no = pick(body, ["request_ref_no", "requestRefNo"], "");
+    const order_id = pick(req.body || {}, ["order_id", "orderId"], "");
+    const request_ref_no = pick(req.body || {}, ["request_ref_no", "requestRefNo"], "");
 
     if (!order_id || !request_ref_no) {
       return res.status(400).json({
@@ -204,7 +196,7 @@ router.post("/evc/status", async (req, res) => {
     }
 
     const response = await vd.post(
-      "/api-getevcstatus/",
+      "/getevcstatus/",
       { order_id, request_ref_no },
       { headers: { token } }
     );
@@ -220,21 +212,18 @@ router.post("/evc/status", async (req, res) => {
 });
 
 /**
- * 6) Get Activated EVC
- * Spec: POST /api-getactivatedevc/
+ * 6) Get Activated EVC (Correct endpoint: /getactivatedevc/)
+ * POST /getactivatedevc/
  * Headers: token
  * Body: { order_id, request_ref_no }
  */
 router.post("/evc/activated", async (req, res) => {
   try {
-    const token = normalizeToken(req);
-    if (!token) {
-      return res.status(400).json({ success: false, message: "token is required in headers (token) or body (token)" });
-    }
+    const token = mustToken(req, res);
+    if (!token) return;
 
-    const body = req.body || {};
-    const order_id = pick(body, ["order_id", "orderId"], "");
-    const request_ref_no = pick(body, ["request_ref_no", "requestRefNo"], "");
+    const order_id = pick(req.body || {}, ["order_id", "orderId"], "");
+    const request_ref_no = pick(req.body || {}, ["request_ref_no", "requestRefNo"], "");
 
     if (!order_id || !request_ref_no) {
       return res.status(400).json({
@@ -244,7 +233,7 @@ router.post("/evc/activated", async (req, res) => {
     }
 
     const response = await vd.post(
-      "/api-getactivatedevc/",
+      "/getactivatedevc/",
       { order_id, request_ref_no },
       { headers: { token } }
     );
@@ -260,17 +249,15 @@ router.post("/evc/activated", async (req, res) => {
 });
 
 /**
- * 7) Wallet Balance
- * Spec: POST /api-walletbalance/
+ * 7) Wallet Balance (Correct endpoint: /getwalletbalance/)
+ * POST /getwalletbalance/
  * Headers: token
  * Body: { distributor_id }
  */
 router.post("/wallet", async (req, res) => {
   try {
-    const token = normalizeToken(req);
-    if (!token) {
-      return res.status(400).json({ success: false, message: "token is required in headers (token) or body (token)" });
-    }
+    const token = mustToken(req, res);
+    if (!token) return;
 
     const distributor_id = pick(req.body || {}, ["distributor_id", "distributorId"], "");
     if (!distributor_id) {
@@ -278,7 +265,7 @@ router.post("/wallet", async (req, res) => {
     }
 
     const response = await vd.post(
-      "/api-walletbalance/",
+      "/getwalletbalance/",
       { distributor_id },
       { headers: { token } }
     );
