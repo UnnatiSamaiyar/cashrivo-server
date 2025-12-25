@@ -141,30 +141,45 @@ router.post("/stores", async (req, res) => {
  */
 router.post("/evc", async (req, res) => {
   try {
-    const token = mustToken(req, res);
-    if (!token) return;
+    // 1️⃣ token mandatory
+    const token =
+      req.headers.token ||
+      req.headers.Token ||
+      req.headers["x-token"];
 
-    const body = req.body || {};
-
-    // Minimal required checks (doc)
-    const order_id = pick(body, ["order_id", "orderId"], "");
-    const sku_code = pick(body, ["sku_code", "skuCode"], "");
-    const distributor_id = pick(body, ["distributor_id", "distributorId"], "");
-    const no_of_card = pick(body, ["no_of_card", "noOfCard"], "");
-    const amount = pick(body, ["amount"], "");
-    const receiptNo = pick(body, ["receiptNo", "receipt_no", "receipt"], "");
-    const curr = pick(body, ["curr", "currency", "currency_code"], "");
-
-    if (!order_id || !sku_code || !distributor_id || !no_of_card || !amount || !receiptNo || !curr) {
+    if (!token) {
       return res.status(400).json({
         success: false,
-        message:
-          "Missing required fields. Need: order_id, sku_code, distributor_id, no_of_card, amount, receiptNo, curr (plus user details fields as per VD).",
+        message: "token header missing",
       });
     }
 
-    const response = await vd.post("/getevc/", body, { headers: { token } });
-    return res.json({ success: true, response: response.data });
+    // 2️⃣ payload mandatory
+    const payload = req.body?.payload;
+
+    if (!payload) {
+      return res.status(400).json({
+        success: false,
+        message: "payload missing (encrypted string required)",
+      });
+    }
+
+    // 3️⃣ Forward AS-IS to VD (NO TOUCHING)
+    const vdResponse = await axios.post(
+      "http://cards.vdwebapi.com/distributor/getevc/",
+      { payload },
+      {
+        headers: { token },
+        timeout: 20000,
+      }
+    );
+
+    // 4️⃣ Return VD response directly
+    return res.json({
+      success: true,
+      response: vdResponse.data,
+    });
+
   } catch (err) {
     return res.status(500).json({
       success: false,
@@ -173,6 +188,7 @@ router.post("/evc", async (req, res) => {
     });
   }
 });
+
 
 /**
  * 5) Get EVC Status (Correct endpoint: /getevcstatus/)
