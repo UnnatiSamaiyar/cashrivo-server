@@ -31,7 +31,9 @@ const ajioRoute = require('./routes/ajioDealRoute');
 const lmdCronRoute = require("./routes/linkmydeal");
 const agodaRoute = require('./routes/agoda');
 const vdRoutes = require("./valuedesign/vd.routes");
-
+const earnkaroRoute = require("./routes/earnKaroRoute");
+const coupomatedRoutes = require("./routes/coupomatedRoutes");
+const { startCoupomatedCron } = require("./cron/coupomatedCron");
 
 require('./cron/fetchScheduler');
 
@@ -106,6 +108,10 @@ app.use('/api', ajioRoute);
 app.use("/api", lmdCronRoute);
 app.use('/api', agodaRoute);
 app.use("/api/vd", vdRoutes);
+app.use("/api/earnkaro", earnkaroRoute);
+app.use("/api/couponmated", coupomatedRoutes);
+
+startCoupomatedCron();
 
 // -----------------------------
 //   ⭐ FIXED: FORCE IPv4 LISTEN
