@@ -34,7 +34,7 @@ const vdRoutes = require("./valuedesign/vd.routes");
 const earnkaroRoute = require("./routes/earnKaroRoute");
 const { startCoupomatedCron } = require("./cron/coupomatedCron");
 const razorpayRoutes = require("./routes/razorpay");
-const seoRoutes = require("./routes/seoRoutes");
+const seoRoutes = require("./routes/seo");
 
 require('./cron/fetchScheduler');
 
