@@ -1,14 +1,20 @@
 // valuedesign/vd.routes.js
 const express = require("express");
-const axios = require("axios");
+const { assertUrl, vdPost } = require("../services/vdClient");
+const { vdDecryptBase64, safeJsonParse } = require("../utils/vdCrypto");
+
+const VdApiLog = require("../models/VdApiLog");
+const VdBrand = require("../models/VdBrand");
+const VdStore = require("../models/VdStore");
+const VdEvcOrder = require("../models/VdEvcOrder");
+const VdWallet = require("../models/VdWallet");
 
 const router = express.Router();
 
 /**
  * ENV (safe defaults)
- * Prefer per-endpoint URLs from env; fallback to VD_BASE if provided.
  */
-const VD_BASE = (process.env.VD_BASE || "").replace(/\/+$/, ""); // no trailing /
+const VD_BASE = (process.env.VD_BASE || "").replace(/\/+$/, "");
 const URLS = {
   TOKEN: process.env.VD_TOKEN_URL || (VD_BASE ? `${VD_BASE}/api-generatetoken/` : ""),
   BRANDS: process.env.VD_BRAND_URL || (VD_BASE ? `${VD_BASE}/api-getbrand/` : ""),
@@ -19,11 +25,9 @@ const URLS = {
   WALLET: process.env.VD_WALLET_URL || (VD_BASE ? `${VD_BASE}/getwalletbalance/` : ""),
 };
 
-// axios client (used when we have only baseURL style endpoints)
-const vd = axios.create({
-  baseURL: VD_BASE || undefined,
-  timeout: 20000,
-});
+// Decrypt env (you gave these; keep in env in production)
+const VD_SECRET_KEY = process.env.VD_SECRET_KEY || "a2da5918609043358dd3081799291d8d";
+const VD_SECRET_IV = process.env.VD_SECRET_IV || "045489084c3a4b70";
 
 /**
  * Helpers
@@ -54,24 +58,55 @@ function mustToken(req, res) {
   return token;
 }
 
-function assertUrl(res, url, name) {
-  if (!url) {
-    res.status(500).json({
-      success: false,
-      message: `${name} URL missing. Set VD_BASE or ${name} env URL.`,
+function safeHeadersForLog(headers) {
+  const h = headers || {};
+  // remove secrets from log, but keep operational metadata
+  const clone = { ...h };
+  if (clone.password) clone.password = "***";
+  if (clone.Password) clone.Password = "***";
+  if (clone["x-password"]) clone["x-password"] = "***";
+  return clone;
+}
+
+async function logApi({ type, req, url, token, requestBody, responseRaw, encrypted, decryptedText, decryptedJson, refs }) {
+  try {
+    await VdApiLog.create({
+      type,
+      request: {
+        headers: safeHeadersForLog(req.headers),
+        body: requestBody || {},
+        url: url || "",
+        method: "POST",
+        token: token || "",
+      },
+      responseRaw: responseRaw || {},
+      encrypted: encrypted || "",
+      decryptedText: decryptedText || "",
+      decryptedJson: decryptedJson || null,
+      order_id: refs?.order_id || "",
+      request_ref_no: refs?.request_ref_no || "",
+      brandCode: refs?.BrandCode || refs?.brandCode || "",
+      distributor_id: refs?.distributor_id || "",
     });
-    return false;
+  } catch (e) {
+    // do not fail API for logging issues
   }
-  return true;
+}
+
+function decryptIfPresent(encryptedStr) {
+  if (!encryptedStr || typeof encryptedStr !== "string") return { text: "", json: null };
+  const text = vdDecryptBase64(encryptedStr, VD_SECRET_KEY, VD_SECRET_IV);
+  const parsed = safeJsonParse(text);
+  return { text, json: parsed };
 }
 
 /**
  * 1) Generate Token
  * POST /api/vd/token
- * Headers: username, password (optional if present in env)
- * Body: { distributor_id } (optional if present in env)
  */
 router.post("/token", async (req, res) => {
+  const url = URLS.TOKEN;
+
   try {
     const distributor_id =
       pick(req.body || {}, ["distributor_id", "distributorId"], "") ||
@@ -97,17 +132,49 @@ router.post("/token", async (req, res) => {
       });
     }
 
-    if (!assertUrl(res, URLS.TOKEN, "VD_TOKEN_URL")) return;
+    assertUrl(url, "VD_TOKEN_URL");
 
-    const response = await axios.post(
-      URLS.TOKEN,
-      { distributor_id },
-      { headers: { username, password }, timeout: 20000 }
-    );
+    const responseRaw = await vdPost(url, { distributor_id }, { username, password }, 20000);
 
-    return res.json({ success: true, response: response.data });
+    /**
+     * Token API can return:
+     * - encrypted base64 string (like your test case sheet)
+     * - OR JSON wrapper
+     *
+     * We'll handle both:
+     */
+    let encrypted = "";
+    if (typeof responseRaw === "string") encrypted = responseRaw;
+    else if (responseRaw?.data && typeof responseRaw.data === "string") encrypted = responseRaw.data;
+
+    let decryptedText = "";
+    let decryptedJson = null;
+    if (encrypted) {
+      const dec = decryptIfPresent(encrypted);
+      decryptedText = dec.text || "";
+      decryptedJson = dec.json || null;
+    }
+
+    await logApi({
+      type: "TOKEN",
+      req,
+      url,
+      token: "",
+      requestBody: { distributor_id },
+      responseRaw,
+      encrypted,
+      decryptedText,
+      decryptedJson,
+      refs: { distributor_id },
+    });
+
+    return res.json({
+      success: true,
+      response: responseRaw,
+      decrypted: decryptedJson || decryptedText || null,
+    });
   } catch (err) {
-    return res.status(500).json({
+    return res.status(err.statusCode || 500).json({
       success: false,
       message: err.message,
       vd_error: err.response?.data || null,
@@ -120,25 +187,79 @@ router.post("/token", async (req, res) => {
  * POST /api/vd/brands
  * Headers: token
  * Body: { BrandCode }
+ *
+ * Saves into VdBrand collection (upsert by BrandCode)
  */
 router.post("/brands", async (req, res) => {
+  const url = URLS.BRANDS;
+
   try {
     const token = mustToken(req, res);
     if (!token) return;
 
-    const BrandCode = pick(req.body || {}, ["BrandCode", "brandCode"], ""); // "" allowed
+    const BrandCode = pick(req.body || {}, ["BrandCode", "brandCode"], "");
 
-    if (!assertUrl(res, URLS.BRANDS, "VD_BRAND_URL")) return;
+    assertUrl(url, "VD_BRAND_URL");
 
-    const response = await axios.post(
-      URLS.BRANDS,
-      { BrandCode },
-      { headers: { token }, timeout: 20000 }
-    );
+    const responseRaw = await vdPost(url, { BrandCode }, { token }, 20000);
 
-    return res.json({ success: true, response: response.data });
+    // Usually encrypted at responseRaw.data
+    const encrypted = responseRaw?.data && typeof responseRaw.data === "string" ? responseRaw.data : "";
+    const { text: decryptedText, json: decryptedJson } = encrypted ? decryptIfPresent(encrypted) : { text: "", json: null };
+
+    // decryptedJson for brands is usually an array of brand objects
+    if (Array.isArray(decryptedJson)) {
+      const ops = decryptedJson.map((b) => {
+        const code = b?.BrandCode || BrandCode || "";
+        return {
+          updateOne: {
+            filter: { BrandCode: code },
+            update: {
+              $set: {
+                BrandCode: code,
+                BrandName: b?.BrandName || "",
+                Brandtype: b?.Brandtype || "",
+                Discount: b?.Discount || "",
+                minPrice: typeof b?.minPrice === "number" ? b.minPrice : (b?.minPrice ? Number(b.minPrice) : null),
+                maxPrice: typeof b?.maxPrice === "number" ? b.maxPrice : (b?.maxPrice ? Number(b.maxPrice) : null),
+                DenominationList: b?.DenominationList || "",
+                Category: b?.Category || "",
+                Description: b?.Description || "",
+                Images: b?.Images || "",
+                TnC: b?.TnC || "",
+                ImportantInstruction: b?.ImportantInstruction || null,
+                RedeemSteps: Array.isArray(b?.RedeemSteps) ? b.RedeemSteps : [],
+                raw: b || {},
+              },
+            },
+            upsert: true,
+          },
+        };
+      });
+
+      if (ops.length) await VdBrand.bulkWrite(ops, { ordered: false });
+    }
+
+    await logApi({
+      type: "BRANDS",
+      req,
+      url,
+      token,
+      requestBody: { BrandCode },
+      responseRaw,
+      encrypted,
+      decryptedText,
+      decryptedJson,
+      refs: { BrandCode },
+    });
+
+    return res.json({
+      success: true,
+      response: responseRaw,
+      decrypted: decryptedJson || decryptedText || null,
+    });
   } catch (err) {
-    return res.status(500).json({
+    return res.status(err.statusCode || 500).json({
       success: false,
       message: err.message,
       vd_error: err.response?.data || null,
@@ -151,25 +272,76 @@ router.post("/brands", async (req, res) => {
  * POST /api/vd/stores
  * Headers: token
  * Body: { BrandCode }
+ *
+ * Saves into VdStore collection (upsert by BrandCode+StoreCode when present)
  */
 router.post("/stores", async (req, res) => {
+  const url = URLS.STORES;
+
   try {
     const token = mustToken(req, res);
     if (!token) return;
 
     const BrandCode = pick(req.body || {}, ["BrandCode", "brandCode"], "");
 
-    if (!assertUrl(res, URLS.STORES, "VD_STORE_URL")) return;
+    assertUrl(url, "VD_STORE_URL");
 
-    const response = await axios.post(
-      URLS.STORES,
-      { BrandCode },
-      { headers: { token }, timeout: 20000 }
-    );
+    const responseRaw = await vdPost(url, { BrandCode }, { token }, 20000);
 
-    return res.json({ success: true, response: response.data });
+    const encrypted = responseRaw?.data && typeof responseRaw.data === "string" ? responseRaw.data : "";
+    const { text: decryptedText, json: decryptedJson } = encrypted ? decryptIfPresent(encrypted) : { text: "", json: null };
+
+    // store list is commonly an array
+    if (Array.isArray(decryptedJson)) {
+      const ops = decryptedJson.map((s) => {
+        const storeCode = s?.StoreCode || s?.storeCode || s?.OutletCode || "";
+        return {
+          updateOne: {
+            filter: { BrandCode: s?.BrandCode || BrandCode || "", StoreCode: storeCode || "" },
+            update: {
+              $set: {
+                BrandCode: s?.BrandCode || BrandCode || "",
+                StoreCode: storeCode || "",
+                StoreName: s?.StoreName || s?.storeName || "",
+                City: s?.City || "",
+                State: s?.State || "",
+                Address: s?.Address || "",
+                Pincode: s?.Pincode || "",
+                Phone: s?.Phone || "",
+                Email: s?.Email || "",
+                Latitude: s?.Latitude || "",
+                Longitude: s?.Longitude || "",
+                raw: s || {},
+              },
+            },
+            upsert: true,
+          },
+        };
+      });
+
+      if (ops.length) await VdStore.bulkWrite(ops, { ordered: false });
+    }
+
+    await logApi({
+      type: "STORES",
+      req,
+      url,
+      token,
+      requestBody: { BrandCode },
+      responseRaw,
+      encrypted,
+      decryptedText,
+      decryptedJson,
+      refs: { BrandCode },
+    });
+
+    return res.json({
+      success: true,
+      response: responseRaw,
+      decrypted: decryptedJson || decryptedText || null,
+    });
   } catch (err) {
-    return res.status(500).json({
+    return res.status(err.statusCode || 500).json({
       success: false,
       message: err.message,
       vd_error: err.response?.data || null,
@@ -178,14 +350,16 @@ router.post("/stores", async (req, res) => {
 });
 
 /**
- * 4) Get EVC (PROD as per mail)
+ * 4) Get EVC
  * POST /api/vd/evc
  * Headers: token
  * Body: { payload: "<encrypted string>" }
  *
- * IMPORTANT: We forward ONLY { payload } to VD exactly.
+ * Saves into VdEvcOrder with decrypted data.
  */
 router.post("/evc", async (req, res) => {
+  const url = URLS.EVC;
+
   try {
     const token = mustToken(req, res);
     if (!token) return;
@@ -198,17 +372,62 @@ router.post("/evc", async (req, res) => {
       });
     }
 
-    if (!assertUrl(res, URLS.EVC, "VD_EVC_URL")) return;
+    assertUrl(url, "VD_EVC_URL");
 
-    const vdResponse = await axios.post(
-      URLS.EVC,
-      { payload },
-      { headers: { token }, timeout: 20000 }
+    const responseRaw = await vdPost(url, { payload }, { token }, 20000);
+
+    // Typical: responseRaw contains responseCode/Msg/order_id/request_ref_no + encrypted data in responseRaw.data
+    const order_id = responseRaw?.order_id || responseRaw?.response?.order_id || "";
+    const request_ref_no = responseRaw?.request_ref_no || responseRaw?.response?.request_ref_no || "";
+
+    // Some implementations wrap it: { success:true, response:{...} }
+    const inner = responseRaw?.response ? responseRaw.response : responseRaw;
+
+    const encryptedData = inner?.data && typeof inner.data === "string" ? inner.data : "";
+    const { text: decryptedText, json: decryptedJson } = encryptedData
+      ? decryptIfPresent(encryptedData)
+      : { text: "", json: null };
+
+    // Persist order (upsert by order_id+request_ref_no if present)
+    await VdEvcOrder.findOneAndUpdate(
+      { order_id: inner?.order_id || order_id || "", request_ref_no: inner?.request_ref_no || request_ref_no || "" },
+      {
+        $set: {
+          order_id: inner?.order_id || order_id || "",
+          request_ref_no: inner?.request_ref_no || request_ref_no || "",
+          responseCode: inner?.responseCode || "",
+          responseMsg: inner?.responseMsg || "",
+          status: inner?.status || "",
+          encryptedData: encryptedData || "",
+          decryptedText: decryptedText || "",
+          decryptedJson: decryptedJson || null,
+          requestPayloadEncrypted: payload,
+          tokenUsed: token,
+        },
+      },
+      { upsert: true, new: true }
     );
 
-    return res.json({ success: true, response: vdResponse.data });
+    await logApi({
+      type: "EVC",
+      req,
+      url,
+      token,
+      requestBody: { payload },
+      responseRaw,
+      encrypted: encryptedData,
+      decryptedText,
+      decryptedJson,
+      refs: { order_id: inner?.order_id || order_id, request_ref_no: inner?.request_ref_no || request_ref_no },
+    });
+
+    return res.json({
+      success: true,
+      response: responseRaw,
+      decrypted: decryptedJson || decryptedText || null,
+    });
   } catch (err) {
-    return res.status(500).json({
+    return res.status(err.statusCode || 500).json({
       success: false,
       message: err.message,
       vd_error: err.response?.data || null,
@@ -221,8 +440,12 @@ router.post("/evc", async (req, res) => {
  * POST /api/vd/evc/status
  * Headers: token
  * Body: { order_id, request_ref_no }
+ *
+ * Logs + updates VdEvcOrder.lastStatusRaw
  */
 router.post("/evc/status", async (req, res) => {
+  const url = URLS.EVC_STATUS;
+
   try {
     const token = mustToken(req, res);
     if (!token) return;
@@ -237,17 +460,33 @@ router.post("/evc/status", async (req, res) => {
       });
     }
 
-    if (!assertUrl(res, URLS.EVC_STATUS, "VD_EVC_STATUS_URL")) return;
+    assertUrl(url, "VD_EVC_STATUS_URL");
 
-    const response = await axios.post(
-      URLS.EVC_STATUS,
+    const responseRaw = await vdPost(url, { order_id, request_ref_no }, { token }, 20000);
+
+    // Update order doc
+    await VdEvcOrder.findOneAndUpdate(
       { order_id, request_ref_no },
-      { headers: { token }, timeout: 20000 }
+      { $set: { lastStatusRaw: responseRaw, tokenUsed: token } },
+      { upsert: true, new: true }
     );
 
-    return res.json({ success: true, response: response.data });
+    await logApi({
+      type: "EVC_STATUS",
+      req,
+      url,
+      token,
+      requestBody: { order_id, request_ref_no },
+      responseRaw,
+      encrypted: "",
+      decryptedText: "",
+      decryptedJson: null,
+      refs: { order_id, request_ref_no },
+    });
+
+    return res.json({ success: true, response: responseRaw });
   } catch (err) {
-    return res.status(500).json({
+    return res.status(err.statusCode || 500).json({
       success: false,
       message: err.message,
       vd_error: err.response?.data || null,
@@ -260,8 +499,12 @@ router.post("/evc/status", async (req, res) => {
  * POST /api/vd/evc/activated
  * Headers: token
  * Body: { order_id, request_ref_no }
+ *
+ * Updates VdEvcOrder.lastActivatedRaw
  */
 router.post("/evc/activated", async (req, res) => {
+  const url = URLS.EVC_ACTIVATED;
+
   try {
     const token = mustToken(req, res);
     if (!token) return;
@@ -276,17 +519,32 @@ router.post("/evc/activated", async (req, res) => {
       });
     }
 
-    if (!assertUrl(res, URLS.EVC_ACTIVATED, "VD_EVC_ACTIVATED_URL")) return;
+    assertUrl(url, "VD_EVC_ACTIVATED_URL");
 
-    const response = await axios.post(
-      URLS.EVC_ACTIVATED,
+    const responseRaw = await vdPost(url, { order_id, request_ref_no }, { token }, 20000);
+
+    await VdEvcOrder.findOneAndUpdate(
       { order_id, request_ref_no },
-      { headers: { token }, timeout: 20000 }
+      { $set: { lastActivatedRaw: responseRaw, tokenUsed: token } },
+      { upsert: true, new: true }
     );
 
-    return res.json({ success: true, response: response.data });
+    await logApi({
+      type: "EVC_ACTIVATED",
+      req,
+      url,
+      token,
+      requestBody: { order_id, request_ref_no },
+      responseRaw,
+      encrypted: "",
+      decryptedText: "",
+      decryptedJson: null,
+      refs: { order_id, request_ref_no },
+    });
+
+    return res.json({ success: true, response: responseRaw });
   } catch (err) {
-    return res.status(500).json({
+    return res.status(err.statusCode || 500).json({
       success: false,
       message: err.message,
       vd_error: err.response?.data || null,
@@ -299,8 +557,12 @@ router.post("/evc/activated", async (req, res) => {
  * POST /api/vd/wallet
  * Headers: token
  * Body: { distributor_id }
+ *
+ * Saves last wallet response as log + VdWallet doc
  */
 router.post("/wallet", async (req, res) => {
+  const url = URLS.WALLET;
+
   try {
     const token = mustToken(req, res);
     if (!token) return;
@@ -313,17 +575,46 @@ router.post("/wallet", async (req, res) => {
       return res.status(400).json({ success: false, message: "distributor_id is required" });
     }
 
-    if (!assertUrl(res, URLS.WALLET, "VD_WALLET_URL")) return;
+    assertUrl(url, "VD_WALLET_URL");
 
-    const response = await axios.post(
-      URLS.WALLET,
-      { distributor_id },
-      { headers: { token }, timeout: 20000 }
-    );
+    const responseRaw = await vdPost(url, { distributor_id }, { token }, 20000);
 
-    return res.json({ success: true, response: response.data });
+    const encryptedData = responseRaw?.data && typeof responseRaw.data === "string" ? responseRaw.data : "";
+    const { text: decryptedText, json: decryptedJson } = encryptedData
+      ? decryptIfPresent(encryptedData)
+      : { text: "", json: null };
+
+    await VdWallet.create({
+      distributor_id,
+      tokenUsed: token,
+      responseCode: responseRaw?.responseCode || "",
+      responseMsg: responseRaw?.responseMsg || "",
+      encryptedData: encryptedData || "",
+      decryptedText: decryptedText || "",
+      decryptedJson: decryptedJson || null,
+      raw: responseRaw || {},
+    });
+
+    await logApi({
+      type: "WALLET",
+      req,
+      url,
+      token,
+      requestBody: { distributor_id },
+      responseRaw,
+      encrypted: encryptedData,
+      decryptedText,
+      decryptedJson,
+      refs: { distributor_id },
+    });
+
+    return res.json({
+      success: true,
+      response: responseRaw,
+      decrypted: decryptedJson || decryptedText || null,
+    });
   } catch (err) {
-    return res.status(500).json({
+    return res.status(err.statusCode || 500).json({
       success: false,
       message: err.message,
       vd_error: err.response?.data || null,
