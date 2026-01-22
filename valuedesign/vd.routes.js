@@ -94,11 +94,20 @@ async function logApi({ type, req, url, token, requestBody, responseRaw, encrypt
 }
 
 function decryptIfPresent(encryptedStr) {
-  if (!encryptedStr || typeof encryptedStr !== "string") return { text: "", json: null };
-  const text = vdDecryptBase64(encryptedStr, VD_SECRET_KEY, VD_SECRET_IV);
-  const parsed = safeJsonParse(text);
-  return { text, json: parsed };
+  try {
+    if (!encryptedStr || typeof encryptedStr !== "string") return { text: "", json: null };
+    const text = vdDecryptBase64(encryptedStr, VD_SECRET_KEY, VD_SECRET_IV);
+
+    // If decrypt fails -> null, but API should still return raw response
+    if (!text) return { text: "", json: null };
+
+    const parsed = safeJsonParse(text);
+    return { text, json: parsed };
+  } catch {
+    return { text: "", json: null };
+  }
 }
+
 
 /**
  * 1) Generate Token
