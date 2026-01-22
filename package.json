@@ -32,6 +32,7 @@
     "p-limit": "^7.2.0",
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0",
+    "razorpay": "^2.9.6",
     "server": "file:",
     "unzipper": "^0.12.3",
     "xml2js": "^0.6.2"
