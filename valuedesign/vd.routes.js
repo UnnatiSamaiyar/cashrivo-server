@@ -12,6 +12,8 @@ const VdWallet = require("../models/VdWallet");
 
 const router = express.Router();
 
+const VD_MODE = (process.env.VD_MODE || "LIVE").trim().toUpperCase(); // LIVE | MOCK
+
 /**
  * ENV (safe defaults)
  */
@@ -317,6 +319,28 @@ router.post("/stores", async (req, res) => {
 router.post("/evc", async (req, res) => {
   const url = URLS.EVC;
 
+  if (VD_MODE === "MOCK") {
+    const payload = pick(req.body || {}, ["payload"], "");
+    // In MOCK, we cannot decrypt vendor payload; we only simulate a successful issuance.
+    const order_id = `MOCK_${Date.now()}`;
+    const request_ref_no = `MOCKREF_${Date.now()}`;
+    const decrypted = { cards: [{ card_no: "MOCK-XXXX-YYYY-ZZZZ", pin: "1234", expiry: "2027-12-31" }], mode: "MOCK" };
+    return res.json({
+      success: true,
+      response: {
+        responseCode: "0",
+        responseMsg: "SUCCESS",
+        status: "SUCCESS",
+        order_id,
+        request_ref_no,
+        data: "",
+        mode: "MOCK",
+      },
+      decrypted,
+      note: "VD_MODE=MOCK",
+    });
+  }
+
   try {
     const token = mustToken(req, res);
     if (!token) return;
@@ -519,6 +543,24 @@ router.post("/evc/activated", async (req, res) => {
  */
 router.post("/wallet", async (req, res) => {
   const url = URLS.WALLET;
+
+  if (VD_MODE === "MOCK") {
+    return res.json({
+      success: true,
+      response: {
+        responseCode: "0",
+        responseMsg: "APPROVAL",
+        walletdetails: {
+          clientName: "Cashrivo (MOCK)",
+          currency: "INR",
+          balance: "999999.00",
+          responseTimestamp: String(Date.now()),
+        },
+      },
+      decrypted: null,
+      note: "VD_MODE=MOCK",
+    });
+  }
 
   try {
     const token = mustToken(req, res);
