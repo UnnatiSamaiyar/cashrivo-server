@@ -4,7 +4,7 @@ const crypto = require("crypto");
 /**
  * Valuedesign Decrypt
  * Mode: AES-256-CBC
- * Input: Base64
+ * Input: Base64 / Base64URL
  *
  * Vendor ambiguity hoti hai (key/iv ko hex treat kare ya utf8).
  * Isliye hum multi-strategy try karte hain and pehli successful decrypt return karte hain.
@@ -30,6 +30,29 @@ function repeatToLen(buf, len) {
   const out = Buffer.alloc(len);
   for (let i = 0; i < len; i++) out[i] = buf[i % buf.length];
   return out;
+}
+
+/**
+ * Normalize base64 / base64url:
+ * - converts '-' -> '+', '_' -> '/'
+ * - removes whitespace/newlines
+ * - pads '=' to multiple of 4
+ */
+function normalizeBase64(input) {
+  if (!input || typeof input !== "string") return "";
+  let s = input.trim();
+
+  // base64url -> base64
+  s = s.replace(/-/g, "+").replace(/_/g, "/");
+
+  // remove whitespace/newlines
+  s = s.replace(/\s+/g, "");
+
+  // pad
+  const pad = s.length % 4;
+  if (pad) s += "=".repeat(4 - pad);
+
+  return s;
 }
 
 /**
@@ -89,10 +112,11 @@ function candidateKeyIv(secretKey, secretIv) {
 function vdDecryptBase64(cipherTextBase64, secretKey, secretIv) {
   if (!cipherTextBase64) return null;
 
-  const encrypted = Buffer.from(String(cipherTextBase64).trim(), "base64");
-  const attempts = candidateKeyIv(secretKey, secretIv);
+  const normalized = normalizeBase64(String(cipherTextBase64));
+  if (!normalized) return null;
 
-  let lastErr = null;
+  const encrypted = Buffer.from(normalized, "base64");
+  const attempts = candidateKeyIv(secretKey, secretIv);
 
   for (const a of attempts) {
     try {
@@ -103,8 +127,8 @@ function vdDecryptBase64(cipherTextBase64, secretKey, secretIv) {
 
       // basic sanity: decrypted empty/garbage ho to continue
       if (text && text.trim().length) return text;
-    } catch (e) {
-      lastErr = e;
+    } catch {
+      // try next strategy
     }
   }
 
