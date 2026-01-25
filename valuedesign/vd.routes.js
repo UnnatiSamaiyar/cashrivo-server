@@ -2,6 +2,7 @@
 const express = require("express");
 const { assertUrl, vdPost } = require("../services/vdClient");
 const { vdDecryptBase64, safeJsonParse } = require("../utils/vdCrypto");
+const { getVdToken } = require("../services/vdTokenCache");
 
 const VdApiLog = require("../models/VdApiLog");
 const VdBrand = require("../models/VdBrand");
@@ -25,9 +26,9 @@ const URLS = {
   WALLET: process.env.VD_WALLET_URL || (VD_BASE ? `${VD_BASE}/getwalletbalance/` : ""),
 };
 
-// Decrypt env (you gave these; keep in env in production)
-const VD_SECRET_KEY = process.env.VD_SECRET_KEY || "a2da5918609043358dd3081799291d8d";
-const VD_SECRET_IV = process.env.VD_SECRET_IV || "045489084c3a4b70";
+// Decrypt env (must be set in production)
+const VD_SECRET_KEY = (process.env.VD_SECRET_KEY || "").trim();
+const VD_SECRET_IV = (process.env.VD_SECRET_IV || "").trim();
 
 /**
  * Helpers
@@ -96,6 +97,7 @@ async function logApi({ type, req, url, token, requestBody, responseRaw, encrypt
 function decryptIfPresent(encryptedStr) {
   try {
     if (!encryptedStr || typeof encryptedStr !== "string") return { text: "", json: null };
+    if (!VD_SECRET_KEY || !VD_SECRET_IV) return { text: "", json: null };
     const text = vdDecryptBase64(encryptedStr, VD_SECRET_KEY, VD_SECRET_IV);
 
     // If decrypt fails -> null, but API should still return raw response
@@ -117,70 +119,16 @@ router.post("/token", async (req, res) => {
   const url = URLS.TOKEN;
 
   try {
-    const distributor_id =
-      pick(req.body || {}, ["distributor_id", "distributorId"], "") ||
-      process.env.VD_DISTRIBUTOR_ID;
-
-    const username =
-      pick(req.headers, ["username", "Username", "x-username"], "") ||
-      pick(req.body || {}, ["username"], "") ||
-      process.env.VD_USERNAME;
-
-    const password =
-      pick(req.headers, ["password", "Password", "x-password"], "") ||
-      pick(req.body || {}, ["password"], "") ||
-      process.env.VD_PASSWORD;
-
-    if (!distributor_id) {
-      return res.status(400).json({ success: false, message: "distributor_id is required" });
-    }
-    if (!username || !password) {
-      return res.status(400).json({
-        success: false,
-        message: "username & password are required (in headers/body or env VD_USERNAME/VD_PASSWORD)",
-      });
-    }
-
-    assertUrl(url, "VD_TOKEN_URL");
-
-    const responseRaw = await vdPost(url, { distributor_id }, { username, password }, 20000);
-
-    /**
-     * Token API can return:
-     * - encrypted base64 string (like your test case sheet)
-     * - OR JSON wrapper
-     *
-     * We'll handle both:
-     */
-    let encrypted = "";
-    if (typeof responseRaw === "string") encrypted = responseRaw;
-    else if (responseRaw?.data && typeof responseRaw.data === "string") encrypted = responseRaw.data;
-
-    let decryptedText = "";
-    let decryptedJson = null;
-    if (encrypted) {
-      const dec = decryptIfPresent(encrypted);
-      decryptedText = dec.text || "";
-      decryptedJson = dec.json || null;
-    }
-
-    await logApi({
-      type: "TOKEN",
-      req,
-      url,
-      token: "",
-      requestBody: { distributor_id },
-      responseRaw,
-      encrypted,
-      decryptedText,
-      decryptedJson,
-      refs: { distributor_id },
-    });
+    // IMPORTANT:
+    // Token is valid for 7 days (VD). In production we should NOT generate it on every call.
+    // This endpoint returns cached token by default.
+    const force = String(req.query.force || "").toLowerCase() === "true" || String(req.query.force || "") === "1";
+    const token = await getVdToken({ force });
 
     return res.json({
       success: true,
-      response: responseRaw,
-      decrypted: decryptedJson || decryptedText || null,
+      token: token ? `${token.slice(0, 6)}***${token.slice(-4)}` : "",
+      note: force ? "token_regenerated" : "token_from_cache",
     });
   } catch (err) {
     return res.status(err.statusCode || 500).json({
@@ -630,5 +578,120 @@ router.post("/wallet", async (req, res) => {
     });
   }
 });
+
+// --- ADMIN READ APIs (MongoDB se) ---
+
+// GET /api/vd/db/brands?search=&page=1&limit=50
+router.get("/db/brands", async (req, res) => {
+  try {
+    const page = Math.max(parseInt(req.query.page || "1"), 1);
+    const limit = Math.min(Math.max(parseInt(req.query.limit || "50"), 1), 200);
+    const search = (req.query.search || "").toString().trim();
+
+    const q = {};
+    if (search) {
+      q.$or = [
+        { BrandCode: { $regex: search, $options: "i" } },
+        { BrandName: { $regex: search, $options: "i" } },
+      ];
+    }
+
+    const [items, total] = await Promise.all([
+      VdBrand.find(q).sort({ updatedAt: -1 }).skip((page - 1) * limit).limit(limit),
+      VdBrand.countDocuments(q),
+    ]);
+
+    res.json({ success: true, page, limit, total, items });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// GET /api/vd/db/stores?brandCode=&search=&page=1&limit=50
+router.get("/db/stores", async (req, res) => {
+  try {
+    const page = Math.max(parseInt(req.query.page || "1"), 1);
+    const limit = Math.min(Math.max(parseInt(req.query.limit || "50"), 1), 200);
+    const brandCode = (req.query.brandCode || "").toString().trim();
+    const search = (req.query.search || "").toString().trim();
+
+    const q = {};
+    if (brandCode) q.BrandCode = brandCode;
+    if (search) {
+      q.$or = [
+        { StoreCode: { $regex: search, $options: "i" } },
+        { StoreName: { $regex: search, $options: "i" } },
+        { City: { $regex: search, $options: "i" } },
+      ];
+    }
+
+    const [items, total] = await Promise.all([
+      VdStore.find(q).sort({ updatedAt: -1 }).skip((page - 1) * limit).limit(limit),
+      VdStore.countDocuments(q),
+    ]);
+
+    res.json({ success: true, page, limit, total, items });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// GET /api/vd/db/orders?search=&page=1&limit=50
+router.get("/db/orders", async (req, res) => {
+  try {
+    const page = Math.max(parseInt(req.query.page || "1"), 1);
+    const limit = Math.min(Math.max(parseInt(req.query.limit || "50"), 1), 200);
+    const search = (req.query.search || "").toString().trim();
+
+    const q = {};
+    if (search) {
+      q.$or = [
+        { order_id: { $regex: search, $options: "i" } },
+        { request_ref_no: { $regex: search, $options: "i" } },
+        { status: { $regex: search, $options: "i" } },
+      ];
+    }
+
+    const [items, total] = await Promise.all([
+      VdEvcOrder.find(q).sort({ updatedAt: -1 }).skip((page - 1) * limit).limit(limit),
+      VdEvcOrder.countDocuments(q),
+    ]);
+
+    res.json({ success: true, page, limit, total, items });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// GET /api/vd/db/logs?type=&search=&page=1&limit=50
+router.get("/db/logs", async (req, res) => {
+  try {
+    const page = Math.max(parseInt(req.query.page || "1"), 1);
+    const limit = Math.min(Math.max(parseInt(req.query.limit || "50"), 1), 200);
+    const type = (req.query.type || "").toString().trim();
+    const search = (req.query.search || "").toString().trim();
+
+    const q = {};
+    if (type) q.type = type;
+    if (search) {
+      q.$or = [
+        { "request.url": { $regex: search, $options: "i" } },
+        { order_id: { $regex: search, $options: "i" } },
+        { request_ref_no: { $regex: search, $options: "i" } },
+        { brandCode: { $regex: search, $options: "i" } },
+      ];
+    }
+
+    const [items, total] = await Promise.all([
+      VdApiLog.find(q).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit),
+      VdApiLog.countDocuments(q),
+    ]);
+
+    res.json({ success: true, page, limit, total, items });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
 
 module.exports = router;
