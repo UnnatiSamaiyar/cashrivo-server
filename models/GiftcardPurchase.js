@@ -35,7 +35,7 @@ const GiftcardPurchaseSchema = new mongoose.Schema(
 
     status: {
       type: String,
-      enum: ["PENDING_PAYMENT", "SUCCESS", "VD_FAILED"],
+      enum: ["PENDING_PAYMENT", "SUCCESS", "SUCCESS_TEST", "VD_FAILED"],
       default: "PENDING_PAYMENT",
       index: true,
     },
