@@ -403,24 +403,40 @@ router.post("/order", auth, async (req, res) => {
 // Verifies Razorpay signature, fulfills via VD EVC, stores vouchers.
 router.post("/verify", auth, async (req, res) => {
   try {
-    const { purchaseId, razorpay_order_id, razorpay_payment_id, razorpay_signature, buyer } = req.body || {};
+    const {
+      purchaseId,
+      razorpay_order_id,
+      razorpay_payment_id,
+      razorpay_signature,
+      buyer,
+    } = req.body || {};
 
     if (!purchaseId || !razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
-      return res.status(400).json({ success: false, message: "Missing payment verification fields" });
+      return res.status(400).json({
+        success: false,
+        message: "Missing payment verification fields",
+      });
     }
+
     if (!key_secret) {
       return res.status(500).json({ success: false, message: "Razorpay secret missing" });
     }
 
     const purchase = await GiftcardPurchase.findById(purchaseId);
     if (!purchase) return res.status(404).json({ success: false, message: "Purchase not found" });
+
     if (String(purchase.user || "") !== String(req.user?.id || "")) {
       return res.status(403).json({ success: false, message: "Forbidden" });
     }
 
     // idempotent
-    if (purchase.status === "SUCCESS") {
-      return res.json({ success: true, message: "Already fulfilled", purchaseId: String(purchase._id) });
+    if (purchase.status === "SUCCESS" || purchase.status === "SUCCESS_TEST") {
+      return res.json({
+        success: true,
+        message: "Already fulfilled",
+        purchaseId: String(purchase._id),
+        status: purchase.status,
+      });
     }
 
     if (purchase.razorpay?.order_id && purchase.razorpay.order_id !== razorpay_order_id) {
@@ -438,11 +454,9 @@ router.post("/verify", auth, async (req, res) => {
 
     // Update buyer details if provided from UI checkout
     if (buyer && typeof buyer === "object") {
-      purchase.buyer = {
-        ...purchase.buyer,
-        ...buyer,
-      };
+      purchase.buyer = { ...purchase.buyer, ...buyer };
     }
+
     purchase.razorpay = {
       order_id: razorpay_order_id,
       payment_id: razorpay_payment_id,
@@ -452,7 +466,9 @@ router.post("/verify", auth, async (req, res) => {
     // Minimal buyer validation for VD
     const buyerName = purchase.buyer?.name || "";
     const buyerEmail = purchase.buyer?.email || "";
-    const buyerMobile = safeMobile(purchase.buyer?.mobile);
+    const buyerMobileRaw = purchase.buyer?.mobile || "";
+    const buyerMobile = safeMobile(buyerMobileRaw);
+
     if (!buyerName || !buyerEmail || !buyerMobile) {
       return res.status(400).json({
         success: false,
@@ -462,85 +478,194 @@ router.post("/verify", auth, async (req, res) => {
 
     const { first, last } = splitName(buyerName);
 
-    // VD payload (based on VD spec & common VD deployments)
-    // - order_id must be unique
-    // - sku_code is usually BrandCode
-    // - amount is denomination per card
-    // - no_of_card is qty
+    // ---------------------------
+    // EXACT VD PLAIN PAYLOAD (as you demanded)
+    // ---------------------------
+    // helpers
+    const isDebug = String(process.env.VD_DEBUG_PAYLOAD || "").toLowerCase() === "true";
+    const allowFallback = String(process.env.ALLOW_FALLBACK_MOCK || "").toLowerCase() === "true";
+
+    function randId(len = 16) {
+      const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+      let out = "";
+      for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
+      return out;
+    }
+
+    // idempotent stable ids (so repeated verify doesn't change vd fields)
+    const stableReqId = purchase.vdOrder?.request_ref_no || purchase.reqId || `CR_${purchase._id}`;
+    const stableReceiptNo = purchase.vdOrder?.receiptNo || `RCPT-${randId(12)}`;
+    const stableOrderId = purchase.vdOrder?.order_id || randId(16);
+
+    // ensure +91 format like your example
+    const mobile_no = buyerMobile.startsWith("+") ? buyerMobile : `+91${buyerMobile}`;
+
     const payloadObj = {
-      order_id: String(purchase._id),
+      order_id: stableOrderId,
+      distributor_id: VD_DISTRIBUTOR_ID,
       sku_code: String(purchase.brandCode || ""),
-      amount: String(purchase.amount || ""),
-      no_of_card: String(purchase.qty || 1),
-      firstname: first,
-      lastname: last,
-      email: buyerEmail,
-      mobile_no: buyerMobile,
+      no_of_card: Number(purchase.qty || 1),
+      amount: Number(purchase.amount || 0),
+      receiptNo: stableReceiptNo,
+      reqId: stableReqId,
+
+      firstname: String(first || ""),
+      lastname: String(last || ""),
+      email: String(buyerEmail || ""),
+      mobile_no,
+
       address: String(purchase.buyer?.address || "NA"),
       city: String(purchase.buyer?.city || "NA"),
       state: String(purchase.buyer?.state || "NA"),
-      country: "India",
+      country: "IN",
       pincode: String(purchase.buyer?.pincode || ""),
-      reqId: `CR_${purchase._id}`,
-      distributor_id: VD_DISTRIBUTOR_ID,
-      currency: "356",
+      curr: "356",
     };
 
-// Fulfill via VD (wrap to avoid generic 500s)
-let token;
-let vdOut;
-try {
-  token = await getVdToken();
-  vdOut = await callVdEvc({ token, payloadObj });
+    // save stable ids once (so later retries remain identical)
+    purchase.vdOrder = {
+      ...(purchase.vdOrder || {}),
+      order_id: stableOrderId,
+      request_ref_no: stableReqId,
+      receiptNo: stableReceiptNo,
+    };
+    await purchase.save();
 
-  // Token might expire earlier; retry once on typical "expired token" patterns
-  const msg = String(vdOut?.responseRaw?.responseMsg || vdOut?.responseRaw?.message || "").toLowerCase();
-  const code = String(vdOut?.responseRaw?.responseCode || "");
-  if (code === "1104" || msg.includes("expired")) {
-    token = await getVdToken({ force: true });
-    vdOut = await callVdEvc({ token, payloadObj });
-  }
-} catch (e) {
-  // Persist failure to DB for audit
-  purchase.status = "VD_FAILED";
-  purchase.vdRaw = { error: String(e?.message || e) };
-  await purchase.save();
+    // ---------- VD Fulfill ----------
+    let token;
+    let vdOut;
+    try {
+      token = await getVdToken();
+      vdOut = await callVdEvc({ token, payloadObj });
 
-  return res.status(502).json({
-    success: false,
-    message: "ValueDesign fulfillment error",
-    error: String(e?.message || e),
-    hint:
-      "Check VD_EVC_URL / VD_SECRET_KEY / VD_SECRET_IV / VD_DISTRIBUTOR_ID env vars and VD credentials; token is cached in DB.",
-  });
-}
+      // Token might expire earlier; retry once
+      const msgLower = String(vdOut?.responseRaw?.responseMsg || vdOut?.responseRaw?.message || "").toLowerCase();
+      const codeStr = String(vdOut?.responseRaw?.responseCode || "");
 
-// Determine success
-    const vdStatus = String(vdOut?.responseRaw?.status || "").toUpperCase();
-    const vdOk = vdStatus === "SUCCESS" || vdStatus === "APPROVAL" || vdStatus === "APPROVED";
-
-    purchase.vdRaw = vdOut.responseRaw || null;
-
-    if (!vdOk) {
+      if (codeStr === "1104" || msgLower.includes("expired")) {
+        token = await getVdToken({ force: true });
+        vdOut = await callVdEvc({ token, payloadObj });
+      }
+    } catch (e) {
       purchase.status = "VD_FAILED";
+      purchase.vdRaw = { error: String(e?.message || e) };
       await purchase.save();
+
       return res.status(502).json({
         success: false,
-        message: "ValueDesign fulfillment failed",
-        vd: vdOut.responseRaw,
+        message: "ValueDesign fulfillment error",
+        error: String(e?.message || e),
+        hint: "If you want fallback testing, set ALLOW_FALLBACK_MOCK=true",
+        ...(isDebug ? { debug: { vd_payload_plain: payloadObj } } : {}),
       });
     }
 
-    // Store vouchers (encrypted-at-rest)
-    const vouchers = extractVouchersFromDecrypted(vdOut.decryptedJson) || vdOut.decryptedJson || vdOut.decryptedText;
+    // Determine success
+    const vdStatus = String(vdOut?.responseRaw?.status || "").toUpperCase();
+    const vdOk = vdStatus === "SUCCESS" || vdStatus === "APPROVAL" || vdStatus === "APPROVED";
+
+    purchase.vdRaw = vdOut?.responseRaw || null;
+
+    // ---------- OPTION B FALLBACK ----------
+    if (!vdOk) {
+      const code = String(vdOut?.responseRaw?.responseCode || "");
+      const msg = String(vdOut?.responseRaw?.responseMsg || "").toLowerCase();
+
+      const isInsufficient =
+        code === "16" ||
+        msg.includes("insufficient") ||
+        msg.includes("insufficent") ||
+        msg.includes("low balance");
+
+      if (allowFallback && isInsufficient) {
+        const qty = Math.max(1, Number(purchase.qty || 1));
+
+        const vouchers = {
+          mode: "FALLBACK_MOCK",
+          provider: "ValueDesign",
+          reason: "INSUFFICIENT_FUNDS",
+          items: Array.from({ length: qty }).map((_, i) => ({
+            code: `TEST-${String(purchase._id).slice(-6)}-${i + 1}`,
+            pin: String(Math.floor(1000 + Math.random() * 9000)),
+            amount: Number(purchase.amount || 0),
+            currency: "INR",
+            expiry: "2027-12-31",
+          })),
+        };
+
+        purchase.vouchers_enc = encryptJson(vouchers);
+        purchase.vouchers_masked = maskVouchers(vouchers);
+        purchase.status = "SUCCESS_TEST";
+        await purchase.save();
+
+        // Email best-effort
+        try {
+          const to = buyerEmail;
+          const subject = `Your Cashrivo Gift Card (TEST) - ${purchase.brandName}`;
+          const html = buildGiftCardEmailHtml({
+            brandName: purchase.brandName,
+            totalAmount: purchase.totalAmount,
+            orderId: purchase._id,
+            vouchers,
+          });
+
+          const info = await sendMail({
+            to,
+            subject,
+            html,
+            text: "Your test gift card is ready. Please login to Cashrivo to view.",
+          });
+
+          purchase.emailDelivery = {
+            sent: true,
+            to,
+            messageId: String(info?.messageId || ""),
+            error: "",
+            sentAt: new Date(),
+          };
+          await purchase.save();
+        } catch (e) {
+          purchase.emailDelivery = {
+            sent: false,
+            to: buyerEmail,
+            messageId: "",
+            error: String(e?.message || e),
+            sentAt: null,
+          };
+          await purchase.save();
+        }
+
+        return res.json({
+          success: true,
+          purchaseId: String(purchase._id),
+          status: purchase.status,
+          vdFallback: true,
+          vd: purchase.vdRaw,
+          ...(isDebug ? { debug: { vd_payload_plain: payloadObj } } : {}),
+        });
+      }
+
+      // No fallback → fail normally
+      purchase.status = "VD_FAILED";
+      await purchase.save();
+
+      return res.status(502).json({
+        success: false,
+        message: "ValueDesign fulfillment failed",
+        vd: vdOut?.responseRaw,
+        ...(isDebug ? { debug: { vd_payload_plain: payloadObj } } : {}),
+      });
+    }
+
+    // ---------- Normal SUCCESS path ----------
+    const vouchers =
+      extractVouchersFromDecrypted(vdOut?.decryptedJson) ||
+      vdOut?.decryptedJson ||
+      vdOut?.decryptedText;
+
     purchase.vouchers_enc = vouchers ? encryptJson(vouchers) : "";
     purchase.vouchers_masked = vouchers ? maskVouchers(vouchers) : null;
     purchase.status = "SUCCESS";
-    purchase.vdOrder = {
-      order_id: vdOut?.responseRaw?.order_id || payloadObj.order_id,
-      request_ref_no: vdOut?.responseRaw?.request_ref_no || "",
-    };
-
     await purchase.save();
 
     // Email delivery (best-effort)
@@ -553,7 +678,14 @@ try {
         orderId: purchase._id,
         vouchers,
       });
-      const info = await sendMail({ to, subject, html, text: "Your gift card is ready. Please login to Cashrivo to view." });
+
+      const info = await sendMail({
+        to,
+        subject,
+        html,
+        text: "Your gift card is ready. Please login to Cashrivo to view.",
+      });
+
       purchase.emailDelivery = {
         sent: true,
         to,
@@ -577,11 +709,15 @@ try {
       success: true,
       purchaseId: String(purchase._id),
       status: purchase.status,
+      vdFallback: false,
+      ...(isDebug ? { debug: { vd_payload_plain: payloadObj } } : {}),
     });
   } catch (e) {
     return res.status(500).json({ success: false, message: e.message });
   }
 });
+
+
 
 // GET /api/giftcards/my-orders
 router.get("/my-orders", auth, async (req, res) => {
