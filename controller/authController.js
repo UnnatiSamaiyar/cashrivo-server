@@ -8,21 +8,35 @@ const createToken = (user) => {
   );
 };
 
+// small helper: consistent error payload
+const sendError = (res, status, code, message) => {
+  return res.status(status).json({
+    success: false,
+    code,
+    message,
+    msg: message, // ✅ backward compatibility (your frontend/backend already uses msg)
+  });
+};
+
 exports.signup = async (req, res) => {
   try {
     const { name, email, password, referCode } = req.body;
 
-    if (!name || !email || !password)
-      return res.status(400).json({ msg: "All fields required" });
+    if (!name || !email || !password) {
+      return sendError(res, 400, "VALIDATION_ERROR", "All fields required");
+    }
 
     const userExists = await User.findOne({ email });
-    if (userExists) return res.status(400).json({ msg: "User already exists" });
+    if (userExists) {
+      // ✅ account exists
+      return sendError(res, 409, "USER_ALREADY_EXISTS", "User already exists");
+    }
 
     // ✅ Validate referCode if provided
     if (referCode) {
       const referrer = await User.findOne({ userId: referCode });
       if (!referrer) {
-        return res.status(400).json({ msg: "Invalid referral code" });
+        return sendError(res, 400, "INVALID_REFERRAL", "Invalid referral code");
       }
     }
 
@@ -39,52 +53,76 @@ exports.signup = async (req, res) => {
     });
 
     const token = createToken(user);
-    res.status(201).json({ token, user });
-    console.log(user.userId);
+
+    return res.status(201).json({
+      success: true,
+      token,
+      user,
+      message: "Signup successful",
+    });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ msg: err.message });
+    return sendError(res, 500, "SERVER_ERROR", err.message || "Server error");
   }
 };
 
 exports.login = async (req, res) => {
   try {
     const { email, password } = req.body;
+
+    if (!email || !password) {
+      return sendError(res, 400, "VALIDATION_ERROR", "Email and password required");
+    }
+
     const user = await User.findOne({ email });
-    if (!user) return res.status(400).json({ msg: "Invalid credentials" });
+    if (!user) {
+      // ✅ account doesn't exist
+      return sendError(res, 404, "USER_NOT_FOUND", "Account doesn't exist");
+    }
 
     const isMatch = await user.comparePassword(password);
-    if (!isMatch) return res.status(400).json({ msg: "Invalid credentials" });
+    if (!isMatch) {
+      // ✅ incorrect password
+      return sendError(res, 401, "INVALID_PASSWORD", "Incorrect password");
+    }
 
     const token = createToken(user);
     const { password: pwd, ...safeUser } = user._doc;
-    res.status(200).json({ token, user: safeUser });
+
+    return res.status(200).json({
+      success: true,
+      token,
+      user: safeUser,
+      message: "Login successful",
+    });
   } catch (err) {
-    res.status(500).json({ msg: err.message });
+    console.error(err);
+    return sendError(res, 500, "SERVER_ERROR", err.message || "Server error");
   }
 };
-
 
 // UPDATE USER BY userId
 exports.updateUser = async (req, res) => {
   const { userId } = req.params;
 
   try {
-    const updated = await User.findOneAndUpdate(
-      { userId }, // Find by userId instead of _id
-      req.body,
-      {
-        new: true,
-        runValidators: true,
-      }
-    ).select("-password"); // Exclude password from response
+    const updated = await User.findOneAndUpdate({ userId }, req.body, {
+      new: true,
+      runValidators: true,
+    }).select("-password");
 
-    if (!updated) return res.status(404).json({ msg: "User not found" });
+    if (!updated) {
+      return sendError(res, 404, "USER_NOT_FOUND", "User not found");
+    }
 
-    res.status(200).json({ user: updated });
+    return res.status(200).json({
+      success: true,
+      user: updated,
+      message: "User updated successfully",
+    });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ msg: "Server error during update" });
+    return sendError(res, 500, "SERVER_ERROR", "Server error during update");
   }
 };
 
@@ -92,24 +130,37 @@ exports.updateUser = async (req, res) => {
 exports.getUsers = async (req, res) => {
   try {
     const users = await User.find().select("-password");
-    res.status(200).json(users);
+    return res.status(200).json({
+      success: true,
+      users,
+      message: "Users fetched successfully",
+    });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ msg: "Server error" });
+    return sendError(res, 500, "SERVER_ERROR", "Server error");
   }
 };
 
 exports.forgot = async (req, res) => {
   try {
     const { email } = req.body;
-    // Placeholder logic — in production, you'd send a reset email
-    const user = await User.findOne({ email });
-    if (!user) return res.status(404).json({ msg: "User not found" });
 
-    res.json({ msg: "Reset link would be sent to email in production." });
+    if (!email) {
+      return sendError(res, 400, "VALIDATION_ERROR", "Email is required");
+    }
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      return sendError(res, 404, "USER_NOT_FOUND", "User not found");
+    }
+
+    return res.json({
+      success: true,
+      message: "Reset link would be sent to email in production.",
+      msg: "Reset link would be sent to email in production.", // backward
+    });
   } catch (err) {
-    res.status(500).json({ msg: err.message });
+    console.error(err);
+    return sendError(res, 500, "SERVER_ERROR", err.message || "Server error");
   }
 };
-
-
