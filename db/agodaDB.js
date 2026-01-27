@@ -20,7 +20,8 @@ function getAgodaConnection() {
 
   agodaConn = mongoose.createConnection(uri, {
     // Keep same options style you use elsewhere
-    
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
 
     // If you want a specific DB name, set it here.
     // If your URI already includes a db name, Mongo will use that.
