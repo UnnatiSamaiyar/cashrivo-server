@@ -396,10 +396,24 @@ router.post("/order", auth, async (req, res) => {
     }
 
     const total = a * q;
-    const amountPaise = Math.round(total * 100);
-    if (!Number.isFinite(amountPaise) || amountPaise <= 0) {
-      return res.status(400).json({ success: false, message: "Invalid total" });
-    }
+
+// discount from brand (e.g. "9.50")
+const disc = Number(String(brand.Discount || "").replace(/[^0-9.]/g, "")) || 0;
+
+// work in paise for exactness
+const totalPaise = Math.round(total * 100);
+
+// same rounding as frontend (your UI uses Math.round)
+const discountPaise = disc > 0 ? Math.round((totalPaise * disc) / 100) : 0;
+
+// payable in paise (min ₹1 safeguard)
+const payablePaise = Math.max(100, totalPaise - discountPaise);
+const payable = payablePaise / 100;
+
+if (!Number.isFinite(payablePaise) || payablePaise <= 0) {
+  return res.status(400).json({ success: false, message: "Invalid payable total" });
+}
+
 
     const userDoc = await User.findById(req.user?.id)
       .select("name email phone address city state pincode")
@@ -412,7 +426,7 @@ router.post("/order", auth, async (req, res) => {
       brandName: brand.BrandName || "",
       amount: a,
       qty: q,
-      totalAmount: total,
+      totalAmount: payable,
       buyer: {
         name: userDoc?.name || "",
         email: userDoc?.email || req.user?.email || "",
@@ -426,7 +440,7 @@ router.post("/order", auth, async (req, res) => {
     });
 
     const order = await razorpay.orders.create({
-      amount: amountPaise,
+      amount: payablePaise,
       currency: "INR",
       receipt: `GC_${purchase._id}`,
       notes: {
