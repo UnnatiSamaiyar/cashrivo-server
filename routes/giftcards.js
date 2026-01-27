@@ -27,7 +27,9 @@ const razorpay = new Razorpay({ key_id, key_secret });
 
 // ValueDesign
 const VD_BASE = (process.env.VD_BASE || "").replace(/\/+$/, "");
-const VD_EVC_URL = (process.env.VD_EVC_URL || (VD_BASE ? `${VD_BASE}/getevc/` : "")).trim();
+const VD_EVC_URL = (
+  process.env.VD_EVC_URL || (VD_BASE ? `${VD_BASE}/getevc/` : "")
+).trim();
 const VD_SECRET_KEY = (process.env.VD_SECRET_KEY || "").trim();
 const VD_SECRET_IV = (process.env.VD_SECRET_IV || "").trim();
 const VD_DISTRIBUTOR_ID = (process.env.VD_DISTRIBUTOR_ID || "").trim();
@@ -47,20 +49,28 @@ function parseDenoms(list) {
 
 function verifyRazorpaySignature({ order_id, payment_id, signature }) {
   const body = `${order_id}|${payment_id}`;
-  const expected = crypto.createHmac("sha256", key_secret).update(body).digest("hex");
+  const expected = crypto
+    .createHmac("sha256", key_secret)
+    .update(body)
+    .digest("hex");
   return expected === signature;
 }
 
 function maskVouchers(vouchers) {
   if (!vouchers) return null;
   try {
-    const list =
-      Array.isArray(vouchers)
-        ? vouchers
-        : vouchers?.cards || vouchers?.CardDetails || vouchers?.card_details || vouchers?.data || null;
+    const list = Array.isArray(vouchers)
+      ? vouchers
+      : vouchers?.cards ||
+        vouchers?.CardDetails ||
+        vouchers?.card_details ||
+        vouchers?.data ||
+        null;
     if (!Array.isArray(list)) return { available: true };
     return list.map((c) => {
-      const code = String(c?.card_no || c?.CardNo || c?.code || c?.voucher_no || "");
+      const code = String(
+        c?.card_no || c?.CardNo || c?.code || c?.voucher_no || "",
+      );
       const last4 = code ? code.slice(-4) : "";
       return {
         label: c?.brand || c?.BrandName || "Gift Card",
@@ -81,14 +91,20 @@ function splitName(fullName) {
 }
 
 function safeMobile(m) {
-  const s = String(m || "").replace(/\D/g, "").slice(-10);
+  const s = String(m || "")
+    .replace(/\D/g, "")
+    .slice(-10);
   return s;
 }
 
 function vdUrls() {
   return {
-    BRANDS: (process.env.VD_BRAND_URL || (VD_BASE ? `${VD_BASE}/api-getbrand/` : "")).trim(),
-    STORES: (process.env.VD_STORE_URL || (VD_BASE ? `${VD_BASE}/api-getstore/` : "")).trim(),
+    BRANDS: (
+      process.env.VD_BRAND_URL || (VD_BASE ? `${VD_BASE}/api-getbrand/` : "")
+    ).trim(),
+    STORES: (
+      process.env.VD_STORE_URL || (VD_BASE ? `${VD_BASE}/api-getstore/` : "")
+    ).trim(),
     EVC: VD_EVC_URL,
   };
 }
@@ -112,12 +128,24 @@ async function callVdEvc({ token, payloadObj }) {
   }
 
   // VD expects encrypted payload string in body: { payload: "..." }
-  const payloadEncrypted = vdEncryptBase64(JSON.stringify(payloadObj), VD_SECRET_KEY, VD_SECRET_IV);
-  const responseRaw = await vdPost(EVC, { payload: payloadEncrypted }, { token }, 30000);
+  const payloadEncrypted = vdEncryptBase64(
+    JSON.stringify(payloadObj),
+    VD_SECRET_KEY,
+    VD_SECRET_IV,
+  );
+  const responseRaw = await vdPost(
+    EVC,
+    { payload: payloadEncrypted },
+    { token },
+    30000,
+  );
 
   // VD responses commonly include encrypted payload in `data`
-  const encryptedData = typeof responseRaw?.data === "string" ? responseRaw.data : "";
-  const dec = encryptedData ? decryptVdResponseData(encryptedData) : { text: "", json: null };
+  const encryptedData =
+    typeof responseRaw?.data === "string" ? responseRaw.data : "";
+  const dec = encryptedData
+    ? decryptVdResponseData(encryptedData)
+    : { text: "", json: null };
 
   return {
     responseRaw,
@@ -138,7 +166,8 @@ function extractVouchersFromDecrypted(decryptedJson) {
 
   if (Array.isArray(decryptedJson)) return decryptedJson;
   if (Array.isArray(decryptedJson?.cards)) return decryptedJson.cards;
-  if (Array.isArray(decryptedJson?.CardDetails)) return decryptedJson.CardDetails;
+  if (Array.isArray(decryptedJson?.CardDetails))
+    return decryptedJson.CardDetails;
 
   const bd = decryptedJson?.brand_details;
   if (Array.isArray(bd) && Array.isArray(bd?.[0]?.items)) return bd[0].items;
@@ -152,7 +181,7 @@ function buildGiftCardEmailHtml({ brandName, totalAmount, orderId, vouchers }) {
     ? masked
         .map(
           (v, i) =>
-            `<li style="margin:0 0 6px 0;">Card ${i + 1}: •••• ${v.code_last4}${v.expiry ? ` (Expiry: ${v.expiry})` : ""}</li>`
+            `<li style="margin:0 0 6px 0;">Card ${i + 1}: •••• ${v.code_last4}${v.expiry ? ` (Expiry: ${v.expiry})` : ""}</li>`,
         )
         .join("")
     : `<li>Your gift card is ready.</li>`;
@@ -241,8 +270,11 @@ router.post("/sync", async (req, res) => {
     // Fetch brands
     assertUrl(BRANDS, "VD_BRAND_URL");
     const brandsRaw = await vdPost(BRANDS, { BrandCode: "" }, { token }, 30000);
-    const brandsEncrypted = typeof brandsRaw?.data === "string" ? brandsRaw.data : "";
-    const brandsDec = brandsEncrypted ? decryptVdResponseData(brandsEncrypted).json : null;
+    const brandsEncrypted =
+      typeof brandsRaw?.data === "string" ? brandsRaw.data : "";
+    const brandsDec = brandsEncrypted
+      ? decryptVdResponseData(brandsEncrypted).json
+      : null;
 
     let brandsUpserted = 0;
     if (Array.isArray(brandsDec)) {
@@ -275,7 +307,7 @@ router.post("/sync", async (req, res) => {
               raw: b || {},
             },
           },
-          { upsert: true }
+          { upsert: true },
         );
         brandsUpserted++;
       }
@@ -284,15 +316,22 @@ router.post("/sync", async (req, res) => {
     // Fetch stores
     assertUrl(STORES, "VD_STORE_URL");
     const storesRaw = await vdPost(STORES, { BrandCode: "" }, { token }, 30000);
-    const storesEncrypted = typeof storesRaw?.data === "string" ? storesRaw.data : "";
-    const storesDec = storesEncrypted ? decryptVdResponseData(storesEncrypted).json : null;
+    const storesEncrypted =
+      typeof storesRaw?.data === "string" ? storesRaw.data : "";
+    const storesDec = storesEncrypted
+      ? decryptVdResponseData(storesEncrypted).json
+      : null;
 
     let storesUpserted = 0;
     if (Array.isArray(storesDec)) {
       for (const s of storesDec) {
         const StoreCode = s?.StoreCode || s?.storeCode;
         if (!StoreCode) continue;
-        await VdStore.findOneAndUpdate({ StoreCode }, { $set: { ...s, StoreCode, raw: s || {} } }, { upsert: true });
+        await VdStore.findOneAndUpdate(
+          { StoreCode },
+          { $set: { ...s, StoreCode, raw: s || {} } },
+          { upsert: true },
+        );
         storesUpserted++;
       }
     }
@@ -312,24 +351,35 @@ router.post("/sync", async (req, res) => {
 router.post("/order", auth, async (req, res) => {
   try {
     if (!key_id || !key_secret) {
-      return res.status(500).json({ success: false, message: "Razorpay keys missing" });
+      return res
+        .status(500)
+        .json({ success: false, message: "Razorpay keys missing" });
     }
     if (!VD_DISTRIBUTOR_ID) {
-      return res.status(500).json({ success: false, message: "VD distributor id missing" });
+      return res
+        .status(500)
+        .json({ success: false, message: "VD distributor id missing" });
     }
 
     const { brandCode, amount, qty } = req.body || {};
     if (!brandCode || !amount || !qty) {
-      return res.status(400).json({ success: false, message: "brandCode, amount, qty required" });
+      return res
+        .status(400)
+        .json({ success: false, message: "brandCode, amount, qty required" });
     }
 
     const brand = await VdBrand.findOne({ BrandCode: brandCode }).lean();
-    if (!brand) return res.status(404).json({ success: false, message: "Brand not found" });
+    if (!brand)
+      return res
+        .status(404)
+        .json({ success: false, message: "Brand not found" });
 
     const a = Number(amount);
     const q = Number(qty);
     if (!Number.isFinite(a) || a <= 0 || !Number.isInteger(q) || q < 1) {
-      return res.status(400).json({ success: false, message: "Invalid amount/qty" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid amount/qty" });
     }
 
     // Enforce denom for fixed brands
@@ -351,7 +401,9 @@ router.post("/order", auth, async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid total" });
     }
 
-    const userDoc = await User.findById(req.user?.id).select("name email phone address city state pincode").lean();
+    const userDoc = await User.findById(req.user?.id)
+      .select("name email phone address city state pincode")
+      .lean();
 
     // Create pending purchase
     const purchase = await GiftcardPurchase.create({
@@ -411,7 +463,12 @@ router.post("/verify", auth, async (req, res) => {
       buyer,
     } = req.body || {};
 
-    if (!purchaseId || !razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+    if (
+      !purchaseId ||
+      !razorpay_order_id ||
+      !razorpay_payment_id ||
+      !razorpay_signature
+    ) {
       return res.status(400).json({
         success: false,
         message: "Missing payment verification fields",
@@ -419,11 +476,16 @@ router.post("/verify", auth, async (req, res) => {
     }
 
     if (!key_secret) {
-      return res.status(500).json({ success: false, message: "Razorpay secret missing" });
+      return res
+        .status(500)
+        .json({ success: false, message: "Razorpay secret missing" });
     }
 
     const purchase = await GiftcardPurchase.findById(purchaseId);
-    if (!purchase) return res.status(404).json({ success: false, message: "Purchase not found" });
+    if (!purchase)
+      return res
+        .status(404)
+        .json({ success: false, message: "Purchase not found" });
 
     if (String(purchase.user || "") !== String(req.user?.id || "")) {
       return res.status(403).json({ success: false, message: "Forbidden" });
@@ -439,8 +501,13 @@ router.post("/verify", auth, async (req, res) => {
       });
     }
 
-    if (purchase.razorpay?.order_id && purchase.razorpay.order_id !== razorpay_order_id) {
-      return res.status(400).json({ success: false, message: "Order ID mismatch" });
+    if (
+      purchase.razorpay?.order_id &&
+      purchase.razorpay.order_id !== razorpay_order_id
+    ) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Order ID mismatch" });
     }
 
     const ok = verifyRazorpaySignature({
@@ -449,7 +516,9 @@ router.post("/verify", auth, async (req, res) => {
       signature: razorpay_signature,
     });
     if (!ok) {
-      return res.status(400).json({ success: false, message: "Invalid payment signature" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid payment signature" });
     }
 
     // Update buyer details if provided from UI checkout
@@ -472,7 +541,8 @@ router.post("/verify", auth, async (req, res) => {
     if (!buyerName || !buyerEmail || !buyerMobile) {
       return res.status(400).json({
         success: false,
-        message: "buyer.name, buyer.email, buyer.mobile required to fulfill gift card",
+        message:
+          "buyer.name, buyer.email, buyer.mobile required to fulfill gift card",
       });
     }
 
@@ -482,23 +552,31 @@ router.post("/verify", auth, async (req, res) => {
     // EXACT VD PLAIN PAYLOAD (as you demanded)
     // ---------------------------
     // helpers
-    const isDebug = String(process.env.VD_DEBUG_PAYLOAD || "").toLowerCase() === "true";
-    const allowFallback = String(process.env.ALLOW_FALLBACK_MOCK || "").toLowerCase() === "true";
+    const isDebug =
+      String(process.env.VD_DEBUG_PAYLOAD || "").toLowerCase() === "true";
+    const allowFallback =
+      String(process.env.ALLOW_FALLBACK_MOCK || "").toLowerCase() === "true";
 
     function randId(len = 16) {
       const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
       let out = "";
-      for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
+      for (let i = 0; i < len; i++)
+        out += chars[Math.floor(Math.random() * chars.length)];
       return out;
     }
 
     // idempotent stable ids (so repeated verify doesn't change vd fields)
-    const stableReqId = purchase.vdOrder?.request_ref_no || purchase.reqId || `CR_${purchase._id}`;
+    const stableReqId =
+      purchase.vdOrder?.request_ref_no ||
+      purchase.reqId ||
+      `CR_${purchase._id}`;
     const stableReceiptNo = purchase.vdOrder?.receiptNo || `RCPT-${randId(12)}`;
     const stableOrderId = purchase.vdOrder?.order_id || randId(16);
 
     // ensure +91 format like your example
-    const mobile_no = buyerMobile.startsWith("+") ? buyerMobile : `+91${buyerMobile}`;
+    const mobile_no = buyerMobile.startsWith("+")
+      ? buyerMobile
+      : `+91${buyerMobile}`;
 
     const payloadObj = {
       order_id: stableOrderId,
@@ -531,6 +609,18 @@ router.post("/verify", auth, async (req, res) => {
     };
     await purchase.save();
 
+    if (purchase.vdRaw && String(purchase.vdRaw.responseCode || "") === "0") {
+      // already approved earlier, don't call VD again
+      purchase.status = "SUCCESS";
+      await purchase.save();
+      return res.json({
+        success: true,
+        purchaseId: String(purchase._id),
+        status: purchase.status,
+        vdFallback: false,
+      });
+    }
+
     // ---------- VD Fulfill ----------
     let token;
     let vdOut;
@@ -539,7 +629,9 @@ router.post("/verify", auth, async (req, res) => {
       vdOut = await callVdEvc({ token, payloadObj });
 
       // Token might expire earlier; retry once
-      const msgLower = String(vdOut?.responseRaw?.responseMsg || vdOut?.responseRaw?.message || "").toLowerCase();
+      const msgLower = String(
+        vdOut?.responseRaw?.responseMsg || vdOut?.responseRaw?.message || "",
+      ).toLowerCase();
       const codeStr = String(vdOut?.responseRaw?.responseCode || "");
 
       if (codeStr === "1104" || msgLower.includes("expired")) {
@@ -561,8 +653,20 @@ router.post("/verify", auth, async (req, res) => {
     }
 
     // Determine success
-    const vdStatus = String(vdOut?.responseRaw?.status || "").toUpperCase();
-    const vdOk = vdStatus === "SUCCESS" || vdStatus === "APPROVAL" || vdStatus === "APPROVED";
+    const raw = vdOut?.responseRaw || {};
+    const vdStatus = String(raw?.status || "").toUpperCase();
+    const vdCode = String(raw?.responseCode || raw?.code || "").trim();
+    const vdMsg = String(raw?.responseMsg || raw?.message || "").toUpperCase();
+
+    // VD success signals (real-world VD pattern)
+    const vdOk =
+      vdCode === "0" ||
+      vdStatus === "SUCCESS" ||
+      vdStatus === "APPROVAL" ||
+      vdStatus === "APPROVED" ||
+      vdMsg.includes("APPROVAL") ||
+      vdMsg.includes("APPROVED") ||
+      vdMsg.includes("SUCCESS");
 
     purchase.vdRaw = vdOut?.responseRaw || null;
 
@@ -717,8 +821,6 @@ router.post("/verify", auth, async (req, res) => {
   }
 });
 
-
-
 // GET /api/giftcards/my-orders
 router.get("/my-orders", auth, async (req, res) => {
   try {
@@ -756,7 +858,8 @@ router.get("/my-orders", auth, async (req, res) => {
 router.get("/order/:id", auth, async (req, res) => {
   try {
     const order = await GiftcardPurchase.findById(req.params.id).lean();
-    if (!order) return res.status(404).json({ success: false, message: "Not found" });
+    if (!order)
+      return res.status(404).json({ success: false, message: "Not found" });
     if (String(order.user || "") !== String(req.user?.id || "")) {
       return res.status(403).json({ success: false, message: "Forbidden" });
     }
