@@ -872,20 +872,35 @@ router.get("/my-orders", auth, async (req, res) => {
 router.get("/order/:id", auth, async (req, res) => {
   try {
     const order = await GiftcardPurchase.findById(req.params.id).lean();
-    if (!order)
-      return res.status(404).json({ success: false, message: "Not found" });
-    if (String(order.user || "") !== String(req.user?.id || "")) {
-      return res.status(403).json({ success: false, message: "Forbidden" });
+    if (!order) return res.status(404).json({ success: false });
+
+    if (String(order.user) !== String(req.user.id)) {
+      return res.status(403).json({ success: false });
     }
 
-    const vouchers = decryptJson(order.vouchers_enc);
-    return res.json({
-      success: true,
-      order: { ...order, vouchers, vouchers_enc: undefined },
-    });
-  } catch (e) {
-    return res.status(500).json({ success: false, message: e.message });
+    let vdDecrypted = null;
+
+    if (order?.vdRaw?.data) {
+      // 🔑 THIS IS THE ONLY SOURCE
+      const dec = decryptVdResponseData(order.vdRaw.data);
+      vdDecrypted = dec?.json || null;
+    }
+
+    const safeOrder = {
+      ...order,
+      vdRaw: {
+        ...order.vdRaw,
+        data: undefined,              // ❌ never send encrypted blob
+        decrypted: vdDecrypted,       // ✅ SEND THIS
+      },
+    };
+
+    return res.json({ success: true, order: safeOrder });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
   }
 });
+
+
 
 module.exports = router;
