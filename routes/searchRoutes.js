@@ -2,283 +2,249 @@
 
 const express = require("express");
 
+// Models (keep this list small + high-signal; add more later if needed)
 const Blog = require("../models/Blogs");
-const LmdOffer = require("../models/LmdOffers");
-const DirectBrand = require("../models/DirectBrand");
-const AmazonBanner = require("../models/AmazonBanner");
-const ExclusiveBanner = require("../models/ExclusiveDeals");
+const Coupon = require("../models/Coupon");
 const Banner = require("../models/bannerModel");
+const DirectBrand = require("../models/DirectBrand");
+let AmazonBanner;
+try {
+  AmazonBanner = require("../models/AmazonBanner");
+} catch (_) {
+  AmazonBanner = null;
+}
 
 const router = express.Router();
 
-function clamp(n, min, max) {
-  n = Number(n);
-  if (!Number.isFinite(n)) return min;
+function clampInt(v, min, max, fallback) {
+  const n = parseInt(String(v ?? ""), 10);
+  if (!Number.isFinite(n)) return fallback;
   return Math.max(min, Math.min(max, n));
 }
 
-function normalize(text = "") {
-  return String(text)
-    .replace(/<[^>]*>/g, " ")
-    .replace(/[\u2018\u2019\u201c\u201d]/g, " ")
-    .replace(/[^0-9A-Za-z]+/g, " ")
-    .toLowerCase()
-    .trim();
+function safeRegex(q) {
+  // escape regex special chars to avoid ReDoS patterns
+  return String(q || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function escapeRegex(s) {
-  return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function makeItem({ type, title, description, route, source, score }) {
+  if (!title || !route) return null;
+  return {
+    type,
+    title,
+    description: description || "",
+    route,
+    source: source || undefined,
+    score: typeof score === "number" ? score : undefined,
+  };
 }
 
-function scoreDoc(qTokens, fields) {
-  // fields: { title, description, tags }
-  const title = normalize(fields.title || "");
-  const desc = normalize(fields.description || "");
-  const tags = normalize(Array.isArray(fields.tags) ? fields.tags.join(" ") : fields.tags || "");
-
-  let score = 0;
-  for (const t of qTokens) {
-    if (!t) continue;
-
-    // Exact token matches (word boundaries)
-    const re = new RegExp(`\\b${escapeRegex(t)}\\b`, "g");
-    const titleHits = (title.match(re) || []).length;
-    const descHits = (desc.match(re) || []).length;
-    const tagHits = (tags.match(re) || []).length;
-
-    score += titleHits * 50;
-    score += descHits * 15;
-    score += tagHits * 10;
-
-    // Prefix boost
-    if (title.startsWith(t)) score += 40;
-    if (desc.startsWith(t)) score += 10;
-  }
-
-  // Small boost for shorter titles (usually higher intent)
-  const titleLen = title.length || 1;
-  score += Math.max(0, 20 - Math.min(20, Math.floor(titleLen / 12)));
-
-  return score;
-}
-
-function buildRegexQuery(qTokens) {
-  // AND semantics across tokens, tolerant prefix matches.
-  // We keep regex simple + safe (escaped) to avoid ReDoS.
-  return qTokens
-    .filter(Boolean)
-    .slice(0, 6)
-    .map((t) => new RegExp(escapeRegex(t), "i"));
-}
-
+/**
+ * GET /api/search?q=...&limit=...
+ * Returns: { ok:true, q, items: [{type,title,description,route,source?}] }
+ *
+ * IMPORTANT:
+ * - Keep routes internal (start with "/") so SPA navigation works.
+ * - This endpoint is intentionally read-only and public.
+ */
 router.get("/search", async (req, res) => {
   try {
-    const q = String(req.query.q || "").trim();
-    const limit = clamp(req.query.limit || 20, 5, 50);
+    const qRaw = String(req.query.q || "").trim();
+    const q = qRaw.slice(0, 80);
+    const limit = clampInt(req.query.limit, 1, 25, 12);
 
     if (!q || q.length < 2) {
-      return res.json({ ok: true, q, results: [] });
+      return res.json({ ok: true, q, items: [] });
     }
 
-    const qTokens = normalize(q).split(/\s+/).filter(Boolean).slice(0, 8);
-    if (!qTokens.length) {
-      return res.json({ ok: true, q, results: [] });
+    const rx = new RegExp(safeRegex(q), "i");
+
+    // per-source caps (so one collection doesn't dominate)
+    const per = {
+      blogs: Math.min(6, limit),
+      coupons: Math.min(8, limit),
+      banners: Math.min(4, limit),
+      directBrands: Math.min(6, limit),
+      amazonBanners: Math.min(4, limit),
+    };
+
+    const queries = [];
+
+    // Blogs
+    queries.push(
+      Blog.find({
+        $or: [
+          { title: rx },
+          { description: rx },
+          { category: rx },
+          { tags: rx },
+          { content: rx },
+        ],
+      })
+        .sort({ createdAt: -1 })
+        .limit(per.blogs)
+        .select("title slug description category tags")
+        .lean()
+        .then((rows) =>
+          rows
+            .map((b) =>
+              makeItem({
+                type: "blog",
+                title: b.title,
+                description:
+                  b.description ||
+                  (Array.isArray(b.tags) && b.tags.length
+                    ? `Tags: ${b.tags.slice(0, 6).join(", ")}`
+                    : b.category
+                      ? `Category: ${b.category}`
+                      : ""),
+                route: b.slug ? `/blog/${encodeURIComponent(b.slug)}` : "",
+                source: "Blogs",
+              })
+            )
+            .filter(Boolean)
+        )
+    );
+
+    // Coupons (Deals)
+    queries.push(
+      Coupon.find({
+        $or: [
+          { couponName: rx },
+          { storeName: rx },
+          { category: rx },
+          { description: rx },
+          { tagline: rx },
+          { code: rx },
+        ],
+      })
+        .sort({ verifiedOn: -1, createdAt: -1 })
+        .limit(per.coupons)
+        .select("couponName storeName category tagline description")
+        .lean()
+        .then((rows) =>
+          rows
+            .map((c) =>
+              makeItem({
+                type: "deal",
+                title: c.couponName || c.storeName || "Deal",
+                description:
+                  c.tagline ||
+                  c.description ||
+                  (c.storeName && c.category ? `${c.storeName} • ${c.category}` : c.storeName || c.category || ""),
+                route: c._id ? `/deal/${String(c._id)}` : "",
+                source: "Coupons",
+              })
+            )
+            .filter(Boolean)
+        )
+    );
+
+    // Site Banners (admin-managed)
+    queries.push(
+      Banner.find({
+        $or: [{ title: rx }, { altText: rx }, { code: rx }],
+      })
+        .sort({ order: 1 })
+        .limit(per.banners)
+        .select("title altText link code")
+        .lean()
+        .then((rows) =>
+          rows
+            .map((b) => {
+              const link = String(b.link || "");
+              const internal = link.startsWith("/") ? link : "/";
+              return makeItem({
+                type: "banner",
+                title: b.title || b.altText || "Banner",
+                description: b.altText || b.code || "",
+                route: internal,
+                source: "Banners",
+              });
+            })
+            .filter(Boolean)
+        )
+    );
+
+    // Direct Brands (admin direct-brands)
+    queries.push(
+      DirectBrand.find({
+        $or: [
+          { name: rx },
+          { offerText: rx },
+          { couponCode: rx },
+          { category: rx },
+        ],
+      })
+        .sort({ priority: -1, updatedAt: -1 })
+        .limit(per.directBrands)
+        .select("name offerText couponCode category")
+        .lean()
+        .then((rows) =>
+          rows
+            .map((d) =>
+              makeItem({
+                type: "brand",
+                title: d.name || "Brand",
+                description: d.offerText || d.couponCode || d.category || "",
+                // best-effort: launchpad is where brand tiles usually live
+                route: "/launchpad",
+                source: "Direct Brands",
+              })
+            )
+            .filter(Boolean)
+        )
+    );
+
+    // Amazon Banners (optional model)
+    if (AmazonBanner) {
+      queries.push(
+        AmazonBanner.find({ $or: [{ title: rx }, { description: rx }] })
+          .sort({ createdAt: -1 })
+          .limit(per.amazonBanners)
+          .select("title description link")
+          .lean()
+          .then((rows) =>
+            rows
+              .map((b) => {
+                const link = String(b.link || "");
+                const internal = link.startsWith("/") ? link : "/amazon-deals";
+                return makeItem({
+                  type: "amazon",
+                  title: b.title || "Amazon",
+                  description: b.description || "",
+                  route: internal,
+                  source: "Amazon Banners",
+                });
+              })
+              .filter(Boolean)
+          )
+      );
     }
 
-    const regs = buildRegexQuery(qTokens);
+    const groups = await Promise.all(queries);
+    const flat = groups.flat().filter(Boolean);
 
-    const [blogs, offers, brands, amazonBanners, exclusiveBanners, miscBanners] =
-      await Promise.all([
-        Blog.find({
-          $and: regs.map((r) => ({
-            $or: [
-              { title: r },
-              { description: r },
-              { tags: r },
-              { category: r },
-              { content: r },
-            ],
-          })),
-        })
-          .select("title slug description tags category featuredImage bannerImage updatedAt")
-          .sort({ updatedAt: -1 })
-          .limit(25)
-          .lean(),
+    // Lightweight ranking: title match first
+    const qLower = q.toLowerCase();
+    flat.sort((a, b) => {
+      const at = String(a.title || "").toLowerCase();
+      const bt = String(b.title || "").toLowerCase();
+      const aStarts = at.startsWith(qLower) ? 1 : 0;
+      const bStarts = bt.startsWith(qLower) ? 1 : 0;
+      if (aStarts !== bStarts) return bStarts - aStarts;
+      const aHas = at.includes(qLower) ? 1 : 0;
+      const bHas = bt.includes(qLower) ? 1 : 0;
+      if (aHas !== bHas) return bHas - aHas;
+      return 0;
+    });
 
-        LmdOffer.find({
-          status: { $ne: "inactive" },
-          $and: regs.map((r) => ({
-            $or: [
-              { title: r },
-              { description: r },
-              { long_offer: r },
-              { store: r },
-              { code: r },
-              { categories: r },
-            ],
-          })),
-        })
-          .select("title description long_offer store categories code image_url updatedAt")
-          .sort({ updatedAt: -1 })
-          .limit(40)
-          .lean(),
-
-        DirectBrand.find({
-          isActive: true,
-          $and: regs.map((r) => ({
-            $or: [{ name: r }, { description: r }, { category: r }, { tags: r }],
-          })),
-        })
-          .select("name slug description category logoUrl bannerUrl priority updatedAt")
-          .sort({ priority: -1, updatedAt: -1 })
-          .limit(25)
-          .lean(),
-
-        AmazonBanner.find({
-          $and: regs.map((r) => ({ $or: [{ title: r }, { description: r }] })),
-        })
-          .select("title description imageUrl link updatedAt")
-          .sort({ updatedAt: -1 })
-          .limit(15)
-          .lean(),
-
-        ExclusiveBanner.find({
-          $and: regs.map((r) => ({ $or: [{ title: r }, { description: r }] })),
-        })
-          .select("title description imageUrl link updatedAt")
-          .sort({ updatedAt: -1 })
-          .limit(15)
-          .lean(),
-
-        Banner.find({
-          $and: regs.map((r) => ({ $or: [{ title: r }, { altText: r }, { code: r }] })),
-        })
-          .select("title altText imageUrl link code updatedAt")
-          .sort({ updatedAt: -1 })
-          .limit(10)
-          .lean(),
-      ]);
-
-    const results = [];
-
-    for (const b of blogs) {
-      const title = b.title || "Blog";
-      const description = b.description || "";
-      const score = scoreDoc(qTokens, { title, description, tags: b.tags });
-      results.push({
-        id: String(b._id),
-        type: "blog",
-        title,
-        description,
-        imageUrl: b.featuredImage || b.bannerImage || "",
-        route: `/blog/${encodeURIComponent(b.slug || "")}`,
-        source: "blogs",
-        score,
-      });
-    }
-
-    for (const o of offers) {
-      const title = o.title || o.long_offer || "Offer";
-      const description = o.description || o.long_offer || "";
-      const score = scoreDoc(qTokens, {
-        title,
-        description,
-        tags: [o.store, ...(o.categories || [])].filter(Boolean),
-      });
-      // Offers are rendered in /exclusive-deals and /deal/:id in this client.
-      // If you later add a dedicated route for LMD offers, you can swap route here.
-      results.push({
-        id: String(o._id),
-        type: "deal",
-        title,
-        description,
-        imageUrl: o.image_url || "",
-        route: `/deal/${encodeURIComponent(String(o._id))}`,
-        source: "lmdoffers",
-        score,
-      });
-    }
-
-    for (const s of brands) {
-      const title = s.name || "Store";
-      const description = s.description || s.category || "";
-      const score = scoreDoc(qTokens, {
-        title,
-        description,
-        tags: [s.category].filter(Boolean),
-      });
-      results.push({
-        id: String(s._id),
-        type: "store",
-        title,
-        description,
-        imageUrl: s.logoUrl || s.bannerUrl || "",
-        route: `/stores/${encodeURIComponent(s.slug || s.name || "")}`,
-        source: "stores",
-        score,
-      });
-    }
-
-    for (const a of amazonBanners) {
-      const title = a.title || "Banner";
-      const description = a.description || "";
-      const score = scoreDoc(qTokens, { title, description, tags: ["amazon"] });
-      results.push({
-        id: String(a._id),
-        type: "banner",
-        title,
-        description,
-        imageUrl: a.imageUrl || "",
-        route: "/",
-        anchorId: "hero-slider",
-        source: "amazon",
-        score,
-      });
-    }
-
-    for (const e of exclusiveBanners) {
-      const title = e.title || "Banner";
-      const description = e.description || "";
-      const score = scoreDoc(qTokens, { title, description, tags: ["exclusive"] });
-      results.push({
-        id: String(e._id),
-        type: "banner",
-        title,
-        description,
-        imageUrl: e.imageUrl || "",
-        route: "/",
-        anchorId: "exclusive-deals",
-        source: "exclusive",
-        score,
-      });
-    }
-
-    for (const bn of miscBanners) {
-      const title = bn.title || bn.altText || "Banner";
-      const description = bn.altText || bn.code || "";
-      const score = scoreDoc(qTokens, { title, description, tags: [] });
-      results.push({
-        id: String(bn._id),
-        type: "banner",
-        title,
-        description,
-        imageUrl: bn.imageUrl || "",
-        route: bn.link || "/",
-        source: "banners",
-        score,
-      });
-    }
-
-    // Sort + slice
-    const finalResults = results
-      .filter((r) => r.score > 0)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, limit);
-
-    res.json({ ok: true, q, results: finalResults });
+    // hard cap
+    const items = flat.slice(0, limit);
+    return res.json({ ok: true, q, items });
   } catch (err) {
-    console.error("/api/search error:", err);
-    res.status(500).json({ ok: false, error: "search_failed" });
+    console.error("GET /api/search error:", err);
+    res.status(500).json({ ok: false, message: "Server error" });
   }
 });
 
