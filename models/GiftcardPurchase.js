@@ -33,6 +33,24 @@ const GiftcardPurchaseSchema = new mongoose.Schema(
       signature: String,
     },
 
+    // For PAYMENT_MODE=TEST (no real money). Stored only for idempotent verification.
+    testPayment: {
+      token: { type: String, default: "" },
+      method: { type: String, default: "" }, // e.g., upi
+      payer_vpa: { type: String, default: "" },
+    },
+
+    // Compliance snapshot (Amazon/Flipkart)
+    policy: {
+      brandKey: { type: String, default: "NORMAL" },
+      monthKey: { type: String, default: "" },
+      phoneHash: { type: String, default: "" },
+      vpaHash: { type: String, default: "" },
+      spendPaise: { type: Number, default: 0 },
+      discountPaise: { type: Number, default: 0 },
+      _usageCounted: { type: Boolean, default: false },
+    },
+
     status: {
       type: String,
       enum: ["PENDING_PAYMENT", "SUCCESS", "SUCCESS_TEST", "VD_FAILED"],

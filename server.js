@@ -36,6 +36,8 @@ const earnkaroRoute = require("./routes/earnKaroRoute");
 const { startCoupomatedCron } = require("./cron/coupomatedCron");
 const razorpayRoutes = require("./routes/razorpay");
 const seoRoutes = require("./routes/seo.routes.js");
+const directBrandRoutes = require("./routes/directBrands");
+const searchRoutes = require("./routes/searchRoutes");
 
 require('./cron/fetchScheduler');
 
@@ -101,7 +103,7 @@ app.use("/api", csvcouponRoute);
 app.use("/api", flymediaRoute);
 app.use("/api", cuelinksRoutes);
 app.use("/api", amazonRoute);
-app.use('/api', amazonBannerRoute);
+app.use('/api', amazonBannerRoute); 
 app.use('/api', exclusiveRoute);
 app.use('/api', involveAsia);
 app.use('/api', flipkartRoute);
@@ -114,6 +116,8 @@ app.use("/api/giftcards", giftcardRoutes);
 app.use("/api/earnkaro", earnkaroRoute);
 app.use("/api/razorpay", razorpayRoutes);
 app.use("/api/seo", seoRoutes);
+app.use("/api", directBrandRoutes);
+app.use("/api", searchRoutes);
 
 
 // -----------------------------
