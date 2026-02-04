@@ -10,6 +10,9 @@ const userSchema = new mongoose.Schema({
 
   avatar: { type: String },
   phone: { type: String },
+  // Brand compliance (Amazon/Flipkart) - backward compatible
+  phoneVerified: { type: Boolean, default: false },
+  phoneVerifiedAt: { type: Date, default: null },
   address: { type: String },
   profileCompletion: {
     isCompleted: { type: Boolean, default: false },

@@ -1,5 +1,9 @@
+// routes/auth.js
+"use strict";
+
 const express = require("express");
 const router = express.Router();
+
 const {
   signup,
   login,
@@ -7,21 +11,16 @@ const {
   getUsers,
   updateUser,
 } = require("../controller/authController");
+
 const Otp = require("../models/Otp");
-const nodemailer = require("nodemailer");
 const User = require("../models/User");
 const bcrypt = require("bcryptjs");
 const passport = require("passport");
 const GoogleStrategy = require("passport-google-oauth20").Strategy;
 
-// Configure your transporter (example with Gmail)
-const transporter = nodemailer.createTransport({
-  service: "gmail",
-  auth: {
-    user: process.env.GMAIL_USER,
-    pass: process.env.GMAIL_PASS,
-  },
-});
+// ✅ Use centralized mailer (SMTP/Gmail fallback)
+const { sendMail } = require("../services/mailer");
+
 function generateOtp() {
   return Math.floor(100000 + Math.random() * 900000).toString(); // 6-digit OTP
 }
@@ -42,29 +41,29 @@ router.post("/send-otp", async (req, res) => {
       return res.status(404).json({ message: "Email does not exist" });
     }
 
-    // 2. Generate OTP and expiry (say 10 mins)
+    // 2. Generate OTP and expiry (10 mins)
     const otp = generateOtp();
-    const IST_OFFSET = 5.5 * 60 * 60 * 1000; // IST is UTC+5:30
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000 + IST_OFFSET);
+
+    // ✅ Correct expiry: 10 minutes from now (no manual IST offset needed)
+    // (Date objects are timezone-agnostic; adding IST offset makes expiry ~5.5h longer)
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
     // 3. Save OTP to DB (remove old OTP for this email if exists)
     await Otp.findOneAndDelete({ email });
     await new Otp({ email, otp, expiresAt }).save();
 
-    // 4. Send OTP email
-    const mailOptions = {
-      from: process.env.GMAIL_USER,
+    // 4. Send OTP email (via SMTP)
+    await sendMail({
       to: email,
       subject: "Your OTP Code",
       text: `Your OTP code is ${otp}. It expires in 10 minutes.`,
-    };
+      // html: `<p>Your OTP code is <b>${otp}</b>. It expires in 10 minutes.</p>`,
+    });
 
-    await transporter.sendMail(mailOptions);
-
-    res.status(200).json({ message: "OTP sent successfully" });
+    return res.status(200).json({ message: "OTP sent successfully" });
   } catch (err) {
     console.error("Error sending OTP:", err);
-    res.status(500).json({ message: "Internal Server Error" });
+    return res.status(500).json({ message: "Internal Server Error" });
   }
 });
 
@@ -87,11 +86,10 @@ router.post("/verify-otp", async (req, res) => {
     }
 
     // ✅ OTP is valid — no deletion yet
-    res.status(200).json({ message: "OTP verified successfully" });
-
+    return res.status(200).json({ message: "OTP verified successfully" });
   } catch (error) {
     console.error("OTP verification failed:", error);
-    res.status(500).json({ message: "Server error" });
+    return res.status(500).json({ message: "Server error" });
   }
 });
 
@@ -99,7 +97,9 @@ router.post("/reset-password", async (req, res) => {
   const { email, otp, newPassword } = req.body;
 
   if (!email || !otp || !newPassword) {
-    return res.status(400).json({ message: "Email, OTP, and new password are required." });
+    return res
+      .status(400)
+      .json({ message: "Email, OTP, and new password are required." });
   }
 
   try {
@@ -132,13 +132,10 @@ router.post("/reset-password", async (req, res) => {
     await Otp.deleteOne({ _id: otpEntry._id });
 
     return res.status(200).json({ message: "Password reset successful." });
-
   } catch (error) {
     console.error("Reset password error:", error);
     return res.status(500).json({ message: "Server error." });
   }
 });
-
-
 
 module.exports = router;
