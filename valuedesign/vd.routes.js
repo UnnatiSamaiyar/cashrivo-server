@@ -9,6 +9,8 @@ const VdBrand = require("../models/VdBrand");
 const VdStore = require("../models/VdStore");
 const VdEvcOrder = require("../models/VdEvcOrder");
 const VdWallet = require("../models/VdWallet");
+const path = require("path");
+const multer = require("multer");
 
 const router = express.Router();
 
@@ -23,25 +25,41 @@ function isVdTest() {
  */
 const VD_BASE = (process.env.VD_BASE || "").replace(/\/+$/, "");
 const URLS = {
-  TOKEN: process.env.VD_TOKEN_URL || (VD_BASE ? `${VD_BASE}/api-generatetoken/` : ""),
-  BRANDS: process.env.VD_BRAND_URL || (VD_BASE ? `${VD_BASE}/api-getbrand/` : ""),
-  STORES: process.env.VD_STORE_URL || (VD_BASE ? `${VD_BASE}/api-getstore/` : ""),
+  TOKEN:
+    process.env.VD_TOKEN_URL ||
+    (VD_BASE ? `${VD_BASE}/api-generatetoken/` : ""),
+  BRANDS:
+    process.env.VD_BRAND_URL || (VD_BASE ? `${VD_BASE}/api-getbrand/` : ""),
+  STORES:
+    process.env.VD_STORE_URL || (VD_BASE ? `${VD_BASE}/api-getstore/` : ""),
   EVC: process.env.VD_EVC_URL || (VD_BASE ? `${VD_BASE}/getevc/` : ""),
-  EVC_STATUS: process.env.VD_EVC_STATUS_URL || (VD_BASE ? `${VD_BASE}/getevcstatus/` : ""),
-  EVC_ACTIVATED: process.env.VD_EVC_ACTIVATED_URL || (VD_BASE ? `${VD_BASE}/getactivatedevc/` : ""),
-  WALLET: process.env.VD_WALLET_URL || (VD_BASE ? `${VD_BASE}/getwalletbalance/` : ""),
+  EVC_STATUS:
+    process.env.VD_EVC_STATUS_URL ||
+    (VD_BASE ? `${VD_BASE}/getevcstatus/` : ""),
+  EVC_ACTIVATED:
+    process.env.VD_EVC_ACTIVATED_URL ||
+    (VD_BASE ? `${VD_BASE}/getactivatedevc/` : ""),
+  WALLET:
+    process.env.VD_WALLET_URL ||
+    (VD_BASE ? `${VD_BASE}/getwalletbalance/` : ""),
 };
 
 // Decrypt env (must be set in production)
 const VD_SECRET_KEY = (process.env.VD_SECRET_KEY || "").trim();
 const VD_SECRET_IV = (process.env.VD_SECRET_IV || "").trim();
 
+const vdAdminUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+});
+
 /**
  * Helpers
  */
 function pick(obj, keys, fallback = undefined) {
   for (const k of keys) {
-    if (obj && obj[k] !== undefined && obj[k] !== null && obj[k] !== "") return obj[k];
+    if (obj && obj[k] !== undefined && obj[k] !== null && obj[k] !== "")
+      return obj[k];
   }
   return fallback;
 }
@@ -75,7 +93,18 @@ function safeHeadersForLog(headers) {
   return clone;
 }
 
-async function logApi({ type, req, url, token, requestBody, responseRaw, encrypted, decryptedText, decryptedJson, refs }) {
+async function logApi({
+  type,
+  req,
+  url,
+  token,
+  requestBody,
+  responseRaw,
+  encrypted,
+  decryptedText,
+  decryptedJson,
+  refs,
+}) {
   try {
     await VdApiLog.create({
       type,
@@ -102,7 +131,8 @@ async function logApi({ type, req, url, token, requestBody, responseRaw, encrypt
 
 function decryptIfPresent(encryptedStr) {
   try {
-    if (!encryptedStr || typeof encryptedStr !== "string") return { text: "", json: null };
+    if (!encryptedStr || typeof encryptedStr !== "string")
+      return { text: "", json: null };
     if (!VD_SECRET_KEY || !VD_SECRET_IV) return { text: "", json: null };
     const text = vdDecryptBase64(encryptedStr, VD_SECRET_KEY, VD_SECRET_IV);
 
@@ -116,7 +146,6 @@ function decryptIfPresent(encryptedStr) {
   }
 }
 
-
 /**
  * 1) Generate Token
  * POST /api/vd/token
@@ -128,7 +157,9 @@ router.post("/token", async (req, res) => {
     // IMPORTANT:
     // Token is valid for 7 days (VD). In production we should NOT generate it on every call.
     // This endpoint returns cached token by default.
-    const force = String(req.query.force || "").toLowerCase() === "true" || String(req.query.force || "") === "1";
+    const force =
+      String(req.query.force || "").toLowerCase() === "true" ||
+      String(req.query.force || "") === "1";
     const token = await getVdToken({ force });
 
     return res.json({
@@ -167,8 +198,13 @@ router.post("/brands", async (req, res) => {
     const responseRaw = await vdPost(url, { BrandCode }, { token }, 20000);
 
     // Usually encrypted at responseRaw.data
-    const encrypted = responseRaw?.data && typeof responseRaw.data === "string" ? responseRaw.data : "";
-    const { text: decryptedText, json: decryptedJson } = encrypted ? decryptIfPresent(encrypted) : { text: "", json: null };
+    const encrypted =
+      responseRaw?.data && typeof responseRaw.data === "string"
+        ? responseRaw.data
+        : "";
+    const { text: decryptedText, json: decryptedJson } = encrypted
+      ? decryptIfPresent(encrypted)
+      : { text: "", json: null };
 
     // decryptedJson for brands is usually an array of brand objects
     if (Array.isArray(decryptedJson)) {
@@ -183,8 +219,18 @@ router.post("/brands", async (req, res) => {
                 BrandName: b?.BrandName || "",
                 Brandtype: b?.Brandtype || "",
                 Discount: b?.Discount || "",
-                minPrice: typeof b?.minPrice === "number" ? b.minPrice : (b?.minPrice ? Number(b.minPrice) : null),
-                maxPrice: typeof b?.maxPrice === "number" ? b.maxPrice : (b?.maxPrice ? Number(b.maxPrice) : null),
+                minPrice:
+                  typeof b?.minPrice === "number"
+                    ? b.minPrice
+                    : b?.minPrice
+                      ? Number(b.minPrice)
+                      : null,
+                maxPrice:
+                  typeof b?.maxPrice === "number"
+                    ? b.maxPrice
+                    : b?.maxPrice
+                      ? Number(b.maxPrice)
+                      : null,
                 DenominationList: b?.DenominationList || "",
                 Category: b?.Category || "",
                 Description: b?.Description || "",
@@ -251,8 +297,13 @@ router.post("/stores", async (req, res) => {
 
     const responseRaw = await vdPost(url, { BrandCode }, { token }, 20000);
 
-    const encrypted = responseRaw?.data && typeof responseRaw.data === "string" ? responseRaw.data : "";
-    const { text: decryptedText, json: decryptedJson } = encrypted ? decryptIfPresent(encrypted) : { text: "", json: null };
+    const encrypted =
+      responseRaw?.data && typeof responseRaw.data === "string"
+        ? responseRaw.data
+        : "";
+    const { text: decryptedText, json: decryptedJson } = encrypted
+      ? decryptIfPresent(encrypted)
+      : { text: "", json: null };
 
     // store list is commonly an array
     if (Array.isArray(decryptedJson)) {
@@ -260,7 +311,10 @@ router.post("/stores", async (req, res) => {
         const storeCode = s?.StoreCode || s?.storeCode || s?.OutletCode || "";
         return {
           updateOne: {
-            filter: { BrandCode: s?.BrandCode || BrandCode || "", StoreCode: storeCode || "" },
+            filter: {
+              BrandCode: s?.BrandCode || BrandCode || "",
+              StoreCode: storeCode || "",
+            },
             update: {
               $set: {
                 BrandCode: s?.BrandCode || BrandCode || "",
@@ -328,7 +382,12 @@ router.post("/evc", async (req, res) => {
     // In MOCK, we cannot decrypt vendor payload; we only simulate a successful issuance.
     const order_id = `MOCK_${Date.now()}`;
     const request_ref_no = `MOCKREF_${Date.now()}`;
-    const decrypted = { cards: [{ card_no: "MOCK-XXXX-YYYY-ZZZZ", pin: "1234", expiry: "2027-12-31" }], mode: "MOCK" };
+    const decrypted = {
+      cards: [
+        { card_no: "MOCK-XXXX-YYYY-ZZZZ", pin: "1234", expiry: "2027-12-31" },
+      ],
+      mode: "MOCK",
+    };
     return res.json({
       success: true,
       response: {
@@ -362,20 +421,28 @@ router.post("/evc", async (req, res) => {
     const responseRaw = await vdPost(url, { payload }, { token }, 20000);
 
     // Typical: responseRaw contains responseCode/Msg/order_id/request_ref_no + encrypted data in responseRaw.data
-    const order_id = responseRaw?.order_id || responseRaw?.response?.order_id || "";
-    const request_ref_no = responseRaw?.request_ref_no || responseRaw?.response?.request_ref_no || "";
+    const order_id =
+      responseRaw?.order_id || responseRaw?.response?.order_id || "";
+    const request_ref_no =
+      responseRaw?.request_ref_no ||
+      responseRaw?.response?.request_ref_no ||
+      "";
 
     // Some implementations wrap it: { success:true, response:{...} }
     const inner = responseRaw?.response ? responseRaw.response : responseRaw;
 
-    const encryptedData = inner?.data && typeof inner.data === "string" ? inner.data : "";
+    const encryptedData =
+      inner?.data && typeof inner.data === "string" ? inner.data : "";
     const { text: decryptedText, json: decryptedJson } = encryptedData
       ? decryptIfPresent(encryptedData)
       : { text: "", json: null };
 
     // Persist order (upsert by order_id+request_ref_no if present)
     await VdEvcOrder.findOneAndUpdate(
-      { order_id: inner?.order_id || order_id || "", request_ref_no: inner?.request_ref_no || request_ref_no || "" },
+      {
+        order_id: inner?.order_id || order_id || "",
+        request_ref_no: inner?.request_ref_no || request_ref_no || "",
+      },
       {
         $set: {
           order_id: inner?.order_id || order_id || "",
@@ -390,7 +457,7 @@ router.post("/evc", async (req, res) => {
           tokenUsed: token,
         },
       },
-      { upsert: true, new: true }
+      { upsert: true, new: true },
     );
 
     await logApi({
@@ -403,7 +470,10 @@ router.post("/evc", async (req, res) => {
       encrypted: encryptedData,
       decryptedText,
       decryptedJson,
-      refs: { order_id: inner?.order_id || order_id, request_ref_no: inner?.request_ref_no || request_ref_no },
+      refs: {
+        order_id: inner?.order_id || order_id,
+        request_ref_no: inner?.request_ref_no || request_ref_no,
+      },
     });
 
     return res.json({
@@ -436,7 +506,11 @@ router.post("/evc/status", async (req, res) => {
     if (!token) return;
 
     const order_id = pick(req.body || {}, ["order_id", "orderId"], "");
-    const request_ref_no = pick(req.body || {}, ["request_ref_no", "requestRefNo"], "");
+    const request_ref_no = pick(
+      req.body || {},
+      ["request_ref_no", "requestRefNo"],
+      "",
+    );
 
     if (!order_id || !request_ref_no) {
       return res.status(400).json({
@@ -447,13 +521,18 @@ router.post("/evc/status", async (req, res) => {
 
     assertUrl(url, "VD_EVC_STATUS_URL");
 
-    const responseRaw = await vdPost(url, { order_id, request_ref_no }, { token }, 20000);
+    const responseRaw = await vdPost(
+      url,
+      { order_id, request_ref_no },
+      { token },
+      20000,
+    );
 
     // Update order doc
     await VdEvcOrder.findOneAndUpdate(
       { order_id, request_ref_no },
       { $set: { lastStatusRaw: responseRaw, tokenUsed: token } },
-      { upsert: true, new: true }
+      { upsert: true, new: true },
     );
 
     await logApi({
@@ -495,7 +574,11 @@ router.post("/evc/activated", async (req, res) => {
     if (!token) return;
 
     const order_id = pick(req.body || {}, ["order_id", "orderId"], "");
-    const request_ref_no = pick(req.body || {}, ["request_ref_no", "requestRefNo"], "");
+    const request_ref_no = pick(
+      req.body || {},
+      ["request_ref_no", "requestRefNo"],
+      "",
+    );
 
     if (!order_id || !request_ref_no) {
       return res.status(400).json({
@@ -506,12 +589,17 @@ router.post("/evc/activated", async (req, res) => {
 
     assertUrl(url, "VD_EVC_ACTIVATED_URL");
 
-    const responseRaw = await vdPost(url, { order_id, request_ref_no }, { token }, 20000);
+    const responseRaw = await vdPost(
+      url,
+      { order_id, request_ref_no },
+      { token },
+      20000,
+    );
 
     await VdEvcOrder.findOneAndUpdate(
       { order_id, request_ref_no },
       { $set: { lastActivatedRaw: responseRaw, tokenUsed: token } },
-      { upsert: true, new: true }
+      { upsert: true, new: true },
     );
 
     await logApi({
@@ -575,14 +663,19 @@ router.post("/wallet", async (req, res) => {
       process.env.VD_DISTRIBUTOR_ID;
 
     if (!distributor_id) {
-      return res.status(400).json({ success: false, message: "distributor_id is required" });
+      return res
+        .status(400)
+        .json({ success: false, message: "distributor_id is required" });
     }
 
     assertUrl(url, "VD_WALLET_URL");
 
     const responseRaw = await vdPost(url, { distributor_id }, { token }, 20000);
 
-    const encryptedData = responseRaw?.data && typeof responseRaw.data === "string" ? responseRaw.data : "";
+    const encryptedData =
+      responseRaw?.data && typeof responseRaw.data === "string"
+        ? responseRaw.data
+        : "";
     const { text: decryptedText, json: decryptedJson } = encryptedData
       ? decryptIfPresent(encryptedData)
       : { text: "", json: null };
@@ -630,8 +723,6 @@ router.post("/wallet", async (req, res) => {
 // GET /api/vd/db/brands?search=&page=1&limit=50
 router.get("/db/brands", async (req, res) => {
   try {
-    const page = Math.max(parseInt(req.query.page || "1"), 1);
-    const limit = Math.min(Math.max(parseInt(req.query.limit || "50"), 1), 200);
     const search = (req.query.search || "").toString().trim();
 
     const q = {};
@@ -642,12 +733,13 @@ router.get("/db/brands", async (req, res) => {
       ];
     }
 
-    const [items, total] = await Promise.all([
-      VdBrand.find(q).sort({ updatedAt: -1 }).skip((page - 1) * limit).limit(limit),
-      VdBrand.countDocuments(q),
-    ]);
+    const items = await VdBrand.find(q).sort({ updatedAt: -1 }).lean(); // faster, no mongoose overhead
 
-    res.json({ success: true, page, limit, total, items });
+    res.json({
+      success: true,
+      total: items.length,
+      items,
+    });
   } catch (e) {
     res.status(500).json({ success: false, message: e.message });
   }
@@ -672,7 +764,10 @@ router.get("/db/stores", async (req, res) => {
     }
 
     const [items, total] = await Promise.all([
-      VdStore.find(q).sort({ updatedAt: -1 }).skip((page - 1) * limit).limit(limit),
+      VdStore.find(q)
+        .sort({ updatedAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit),
       VdStore.countDocuments(q),
     ]);
 
@@ -699,7 +794,10 @@ router.get("/db/orders", async (req, res) => {
     }
 
     const [items, total] = await Promise.all([
-      VdEvcOrder.find(q).sort({ updatedAt: -1 }).skip((page - 1) * limit).limit(limit),
+      VdEvcOrder.find(q)
+        .sort({ updatedAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit),
       VdEvcOrder.countDocuments(q),
     ]);
 
@@ -729,7 +827,10 @@ router.get("/db/logs", async (req, res) => {
     }
 
     const [items, total] = await Promise.all([
-      VdApiLog.find(q).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit),
+      VdApiLog.find(q)
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit),
       VdApiLog.countDocuments(q),
     ]);
 
@@ -738,7 +839,6 @@ router.get("/db/logs", async (req, res) => {
     res.status(500).json({ success: false, message: e.message });
   }
 });
-
 
 /* =============================
  * ADMIN AUTOMATION + ANALYTICS
@@ -765,7 +865,7 @@ async function upsertJobState(key, patch) {
   await VdJobState.findOneAndUpdate(
     { key },
     { $set: { key, ...(patch || {}) } },
-    { upsert: true, new: true }
+    { upsert: true, new: true },
   );
 }
 
@@ -773,16 +873,23 @@ async function jobRefreshTokenNow() {
   const start = Date.now();
   const distributor_id = (process.env.VD_DISTRIBUTOR_ID || "").trim();
 
-  await upsertJobState("token", { lastRunAt: new Date(), lastStatus: "RUNNING", lastError: "" });
+  await upsertJobState("token", {
+    lastRunAt: new Date(),
+    lastStatus: "RUNNING",
+    lastError: "",
+  });
 
   try {
     const token = await getVdToken({ force: true });
     // optional plain storage (NOT recommended)
-    if (String(process.env.VD_STORE_TOKEN_PLAIN || "").toLowerCase() === "true" && distributor_id) {
+    if (
+      String(process.env.VD_STORE_TOKEN_PLAIN || "").toLowerCase() === "true" &&
+      distributor_id
+    ) {
       await VdToken.findOneAndUpdate(
         { distributor_id },
         { $set: { token_plain: token || "" } },
-        { upsert: true }
+        { upsert: true },
       );
     }
 
@@ -793,7 +900,10 @@ async function jobRefreshTokenNow() {
       meta: { ms: Date.now() - start },
     });
 
-    return { ok: true, tokenMasked: token ? `${token.slice(0, 6)}***${token.slice(-4)}` : "" };
+    return {
+      ok: true,
+      tokenMasked: token ? `${token.slice(0, 6)}***${token.slice(-4)}` : "",
+    };
   } catch (e) {
     await upsertJobState("token", {
       lastStatus: "ERROR",
@@ -806,7 +916,11 @@ async function jobRefreshTokenNow() {
 
 async function jobSyncBrandsNow() {
   const start = Date.now();
-  await upsertJobState("brands", { lastRunAt: new Date(), lastStatus: "RUNNING", lastError: "" });
+  await upsertJobState("brands", {
+    lastRunAt: new Date(),
+    lastStatus: "RUNNING",
+    lastError: "",
+  });
 
   const url = URLS.BRANDS;
 
@@ -816,8 +930,13 @@ async function jobSyncBrandsNow() {
 
     const responseRaw = await vdPost(url, { BrandCode: "" }, { token }, 30000);
 
-    const encrypted = responseRaw?.data && typeof responseRaw.data === "string" ? responseRaw.data : "";
-    const { text: decryptedText, json: decryptedJson } = encrypted ? decryptIfPresent(encrypted) : { text: "", json: null };
+    const encrypted =
+      responseRaw?.data && typeof responseRaw.data === "string"
+        ? responseRaw.data
+        : "";
+    const { text: decryptedText, json: decryptedJson } = encrypted
+      ? decryptIfPresent(encrypted)
+      : { text: "", json: null };
 
     if (Array.isArray(decryptedJson)) {
       const ops = decryptedJson.map((b) => {
@@ -831,8 +950,18 @@ async function jobSyncBrandsNow() {
                 BrandName: b?.BrandName || "",
                 Brandtype: b?.Brandtype || "",
                 Discount: b?.Discount || "",
-                minPrice: typeof b?.minPrice === "number" ? b.minPrice : (b?.minPrice ? Number(b.minPrice) : null),
-                maxPrice: typeof b?.maxPrice === "number" ? b.maxPrice : (b?.maxPrice ? Number(b.maxPrice) : null),
+                minPrice:
+                  typeof b?.minPrice === "number"
+                    ? b.minPrice
+                    : b?.minPrice
+                      ? Number(b.minPrice)
+                      : null,
+                maxPrice:
+                  typeof b?.maxPrice === "number"
+                    ? b.maxPrice
+                    : b?.maxPrice
+                      ? Number(b.maxPrice)
+                      : null,
                 DenominationList: b?.DenominationList || "",
                 Category: b?.Category || "",
                 Description: b?.Description || "",
@@ -868,10 +997,16 @@ async function jobSyncBrandsNow() {
       lastOkAt: new Date(),
       lastStatus: "OK",
       lastError: "",
-      meta: { ms: Date.now() - start, count: Array.isArray(decryptedJson) ? decryptedJson.length : 0 },
+      meta: {
+        ms: Date.now() - start,
+        count: Array.isArray(decryptedJson) ? decryptedJson.length : 0,
+      },
     });
 
-    return { ok: true, count: Array.isArray(decryptedJson) ? decryptedJson.length : 0 };
+    return {
+      ok: true,
+      count: Array.isArray(decryptedJson) ? decryptedJson.length : 0,
+    };
   } catch (e) {
     await upsertJobState("brands", {
       lastStatus: "ERROR",
@@ -891,7 +1026,9 @@ router.get("/admin/status", async (req, res) => {
     const distributor_id = (process.env.VD_DISTRIBUTOR_ID || "").trim();
 
     const [tokenDoc, jobs] = await Promise.all([
-      distributor_id ? VdToken.findOne({ distributor_id }).lean() : Promise.resolve(null),
+      distributor_id
+        ? VdToken.findOne({ distributor_id }).lean()
+        : Promise.resolve(null),
       VdJobState.find({ key: { $in: ["token", "brands"] } }).lean(),
     ]);
 
@@ -905,7 +1042,9 @@ router.get("/admin/status", async (req, res) => {
             distributor_id: tokenDoc.distributor_id,
             expiresAt: tokenDoc.expiresAt || null,
             updatedAt: tokenDoc.updatedAt || null,
-            note: tokenDoc.token_plain ? "token_plain_enabled" : "token_encrypted_only",
+            note: tokenDoc.token_plain
+              ? "token_plain_enabled"
+              : "token_encrypted_only",
           }
         : null,
       jobs: {
@@ -913,7 +1052,9 @@ router.get("/admin/status", async (req, res) => {
         brands: jobMap.brands || null,
       },
       scheduler: {
-        enabled: String(process.env.VD_AUTOMATION_ENABLED || "").toLowerCase() !== "false",
+        enabled:
+          String(process.env.VD_AUTOMATION_ENABLED || "").toLowerCase() !==
+          "false",
         note: "Start the scheduler by importing services/vdAutomation.initVdAutomation(app) in server bootstrap",
       },
     });
@@ -927,7 +1068,8 @@ router.post("/admin/jobs/token/run", async (req, res) => {
   try {
     if (!requireAdminKey(req, res)) return;
     const out = await jobRefreshTokenNow();
-    if (!out.ok) return res.status(500).json({ success: false, message: out.error });
+    if (!out.ok)
+      return res.status(500).json({ success: false, message: out.error });
     res.json({ success: true, message: "token refreshed", ...out });
   } catch (e) {
     res.status(500).json({ success: false, message: e.message });
@@ -939,7 +1081,8 @@ router.post("/admin/jobs/brands/run", async (req, res) => {
   try {
     if (!requireAdminKey(req, res)) return;
     const out = await jobSyncBrandsNow();
-    if (!out.ok) return res.status(500).json({ success: false, message: out.error });
+    if (!out.ok)
+      return res.status(500).json({ success: false, message: out.error });
     res.json({ success: true, message: "brands synced", ...out });
   } catch (e) {
     res.status(500).json({ success: false, message: e.message });
@@ -952,7 +1095,10 @@ router.patch("/admin/brands/update", async (req, res) => {
     if (!requireAdminKey(req, res)) return;
 
     const BrandCode = String(req.body?.BrandCode || "").trim();
-    if (!BrandCode) return res.status(400).json({ success: false, message: "BrandCode required" });
+    if (!BrandCode)
+      return res
+        .status(400)
+        .json({ success: false, message: "BrandCode required" });
 
     const patch = {};
 
@@ -962,7 +1108,8 @@ router.patch("/admin/brands/update", async (req, res) => {
       const s = String(v).trim().replace("%", "");
       if (s === "") return ""; // allow clearing
       const n = Number(s);
-      if (!Number.isFinite(n) || n < 0) throw new Error("Invalid discount percentage");
+      if (!Number.isFinite(n) || n < 0)
+        throw new Error("Invalid discount percentage");
       // store as "9.50"
       return n.toFixed(2);
     };
@@ -986,13 +1133,15 @@ router.patch("/admin/brands/update", async (req, res) => {
       if (req.body.discountUser === undefined) patch.discountUser = pct;
     }
 
-    if (req.body.enabled !== undefined) patch.enabled = Boolean(req.body.enabled);
-    if (req.body.notes !== undefined) patch.notes = String(req.body.notes || "");
+    if (req.body.enabled !== undefined)
+      patch.enabled = Boolean(req.body.enabled);
+    if (req.body.notes !== undefined)
+      patch.notes = String(req.body.notes || "");
 
     const doc = await VdBrand.findOneAndUpdate(
       { BrandCode },
       { $set: patch },
-      { new: true }
+      { new: true },
     ).lean();
 
     res.json({ success: true, item: doc });
@@ -1000,7 +1149,6 @@ router.patch("/admin/brands/update", async (req, res) => {
     res.status(500).json({ success: false, message: e.message });
   }
 });
-
 
 // GET /api/vd/admin/analytics?from=YYYY-MM-DD&to=YYYY-MM-DD
 router.get("/admin/analytics", async (req, res) => {
@@ -1013,7 +1161,9 @@ router.get("/admin/analytics", async (req, res) => {
 
     // default: last 30 days
     const now = new Date();
-    const start = from ? new Date(from) : new Date(now.getTime() - 30 * 24 * 3600 * 1000);
+    const start = from
+      ? new Date(from)
+      : new Date(now.getTime() - 30 * 24 * 3600 * 1000);
     const end = to ? new Date(to) : now;
 
     const match = { createdAt: { $gte: start, $lte: end } };
@@ -1022,8 +1172,12 @@ router.get("/admin/analytics", async (req, res) => {
       .select("brandCode brandName amount qty totalAmount status emailDelivery")
       .lean();
 
-    const brandCodes = Array.from(new Set(purchases.map((p) => String(p.brandCode || "")).filter(Boolean)));
-    const brands = await VdBrand.find({ BrandCode: { $in: brandCodes } }).select("BrandCode Discount customerDiscount").lean();
+    const brandCodes = Array.from(
+      new Set(purchases.map((p) => String(p.brandCode || "")).filter(Boolean)),
+    );
+    const brands = await VdBrand.find({ BrandCode: { $in: brandCodes } })
+      .select("BrandCode Discount customerDiscount")
+      .lean();
     const bmap = new Map(brands.map((b) => [String(b.BrandCode), b]));
 
     let gross = 0;
@@ -1047,7 +1201,8 @@ router.get("/admin/analytics", async (req, res) => {
       else statusCounts.pending += 1;
 
       if (p.emailDelivery?.sent) email.sent += 1;
-      else if (p.emailDelivery && String(p.emailDelivery?.to || "")) email.failed += 1;
+      else if (p.emailDelivery && String(p.emailDelivery?.to || ""))
+        email.failed += 1;
 
       const isPaid = s === "SUCCESS" || s === "SUCCESS_TEST";
       if (isPaid) {
@@ -1055,14 +1210,21 @@ router.get("/admin/analytics", async (req, res) => {
         if (Number.isFinite(pay)) payable += pay;
 
         const code = String(p.brandCode || "");
-        const prev = byBrand.get(code) || { brandCode: code, brandName: p.brandName || code, payable: 0 };
+        const prev = byBrand.get(code) || {
+          brandCode: code,
+          brandName: p.brandName || code,
+          payable: 0,
+        };
         prev.payable += pay;
         byBrand.set(code, prev);
 
         // margin estimate
         const b = bmap.get(code);
-        const vendorDisc = Number(String(b?.Discount || "").replace(/[^0-9.]/g, "")) || 0;
-        const customerDisc = Number(String(b?.customerDiscount || "").replace(/[^0-9.]/g, "")) || vendorDisc;
+        const vendorDisc =
+          Number(String(b?.Discount || "").replace(/[^0-9.]/g, "")) || 0;
+        const customerDisc =
+          Number(String(b?.customerDiscount || "").replace(/[^0-9.]/g, "")) ||
+          vendorDisc;
         const diff = vendorDisc - customerDisc;
         if (diff > 0) marginEstimated += (g * diff) / 100;
       }
@@ -1086,5 +1248,324 @@ router.get("/admin/analytics", async (req, res) => {
   }
 });
 
+/**
+ * POST /api/vd/admin/brands/bulk-customer-discount
+ * multipart/form-data: file=<csv|xlsx>
+ *
+ * Compares by BrandName (case-insensitive) and updates:
+ * - customerDiscount
+ * - discountUser
+ *
+ * Column auto-detect:
+ *  - BrandName column: BrandName | Product Name | ProductName | brand_name
+ *  - Discount column: customerDiscount | CustomerDiscount | End User Offer on UPI | End User Offer | Offer
+ */
+router.post(
+  "/admin/brands/bulk-customer-discount",
+  vdAdminUpload.single("file"),
+  async (req, res) => {
+    try {
+      if (!requireAdminKey(req, res)) return;
+
+      const file = req.file;
+      if (!file) {
+        return res
+          .status(400)
+          .json({
+            success: false,
+            message: "file is required (multipart field: file)",
+          });
+      }
+
+      const original = String(file.originalname || "");
+      const ext = path.extname(original).toLowerCase();
+
+      const normalizeName = (s) =>
+        String(s || "")
+          .trim()
+          .replace(/\s+/g, " ")
+          .toLowerCase();
+
+      const normalizePct = (v) => {
+        if (v === undefined || v === null) return undefined;
+        if (typeof v === "string" && v.trim() === "") return ""; // allow clearing
+        const s = String(v).trim().replace("%", "");
+        if (s === "") return "";
+        const n0 = Number(s);
+        if (!Number.isFinite(n0) || n0 < 0)
+          throw new Error("Invalid discount percentage");
+        // fraction -> percent (0.0025 => 0.25)
+        const n = n0 > 0 && n0 <= 1 ? n0 * 100 : n0;
+        return n.toFixed(2);
+      };
+
+      // CSV parser (handles commas inside quotes)
+      const parseCsv = (text) => {
+        const rows = [];
+        let i = 0;
+        let field = "";
+        let row = [];
+        let inQuotes = false;
+
+        const pushField = () => {
+          row.push(field);
+          field = "";
+        };
+
+        const pushRow = () => {
+          if (row.length === 1 && String(row[0] || "").trim() === "") {
+            row = [];
+            return;
+          }
+          rows.push(row);
+          row = [];
+        };
+
+        while (i < text.length) {
+          const ch = text[i];
+
+          if (inQuotes) {
+            if (ch === '"') {
+              if (text[i + 1] === '"') {
+                field += '"';
+                i += 2;
+                continue;
+              }
+              inQuotes = false;
+              i += 1;
+              continue;
+            }
+            field += ch;
+            i += 1;
+            continue;
+          }
+
+          if (ch === '"') {
+            inQuotes = true;
+            i += 1;
+            continue;
+          }
+
+          if (ch === ",") {
+            pushField();
+            i += 1;
+            continue;
+          }
+
+          if (ch === "\n") {
+            pushField();
+            pushRow();
+            i += 1;
+            continue;
+          }
+
+          if (ch === "\r") {
+            i += 1;
+            continue;
+          }
+
+          field += ch;
+          i += 1;
+        }
+
+        pushField();
+        pushRow();
+
+        if (!rows.length) return [];
+
+        const header = rows.shift().map((h) => String(h || "").trim());
+        const out = [];
+        for (const r of rows) {
+          const obj = {};
+          for (let c = 0; c < header.length; c++) obj[header[c]] = r[c];
+          out.push(obj);
+        }
+        return out;
+      };
+
+      const detectCol = (cols, candidates) => {
+        const norm = (x) =>
+          String(x || "")
+            .trim()
+            .toLowerCase();
+        const map = {};
+        for (const c of cols || []) map[norm(c)] = c;
+
+        for (const cand of candidates) {
+          const hit = map[norm(cand)];
+          if (hit) return hit;
+        }
+
+        // fuzzy contains
+        const colsArr = cols || [];
+        for (const cand of candidates) {
+          const n = norm(cand);
+          const found = colsArr.find((c) => norm(c).includes(n));
+          if (found) return found;
+        }
+        return "";
+      };
+
+      const bytes = file.buffer || Buffer.alloc(0);
+
+      let rows = [];
+      if (ext === ".csv") {
+        rows = parseCsv(bytes.toString("utf8"));
+      } else if (ext === ".xlsx" || ext === ".xls") {
+        let XLSX = null;
+        try {
+          XLSX = require("xlsx");
+        } catch {
+          return res.status(400).json({
+            success: false,
+            message:
+              "XLSX upload requires 'xlsx' package on server (npm i xlsx). Upload CSV instead.",
+          });
+        }
+        const wb = XLSX.read(bytes, { type: "buffer" });
+        const sheetName = wb.SheetNames?.[0];
+        if (!sheetName)
+          return res
+            .status(400)
+            .json({ success: false, message: "Excel sheet not found" });
+        const ws = wb.Sheets[sheetName];
+        rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
+      } else {
+        return res
+          .status(400)
+          .json({
+            success: false,
+            message: "Unsupported file type. Only .csv, .xlsx",
+          });
+      }
+
+      if (!Array.isArray(rows) || rows.length === 0) {
+        return res
+          .status(400)
+          .json({ success: false, message: "No rows found in file" });
+      }
+
+      const cols = Object.keys(rows[0] || {});
+      const brandNameCol = detectCol(cols, [
+        "BrandName",
+        "Product Name",
+        "ProductName",
+        "brandName",
+        "brand_name",
+      ]);
+      const discountCol = detectCol(cols, [
+        "customerDiscount",
+        "CustomerDiscount",
+        "End User Offer on UPI",
+        "End User Offer",
+        "Offer",
+      ]);
+
+      if (!brandNameCol) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Brand name column not found. Expected BrandName / Product Name / ProductName",
+          cols,
+        });
+      }
+      if (!discountCol) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Discount column not found. Expected customerDiscount / End User Offer on UPI / End User Offer",
+          cols,
+        });
+      }
+
+      // DB lookup: normalized BrandName -> BrandCode[]
+      const dbBrands = await VdBrand.find(
+        {},
+        { BrandCode: 1, BrandName: 1 },
+      ).lean();
+      const nameToCodes = new Map();
+      for (const b of dbBrands || []) {
+        const key = normalizeName(b.BrandName);
+        if (!key) continue;
+        const arr = nameToCodes.get(key) || [];
+        arr.push(String(b.BrandCode || ""));
+        nameToCodes.set(key, arr);
+      }
+
+      const updates = [];
+      const notFound = [];
+      const invalid = [];
+
+      for (const r of rows) {
+        const rawName = r?.[brandNameCol];
+        const rawDiscount = r?.[discountCol];
+
+        const key = normalizeName(rawName);
+        if (!key) continue;
+
+        let pct;
+        try {
+          pct = normalizePct(rawDiscount);
+        } catch (e) {
+          invalid.push({
+            BrandName: String(rawName || ""),
+            value: rawDiscount,
+            error: String(e?.message || e),
+          });
+          continue;
+        }
+
+        const codes = nameToCodes.get(key);
+        if (!codes || !codes.length) {
+          notFound.push(String(rawName || ""));
+          continue;
+        }
+
+        for (const BrandCode of codes) {
+          updates.push({
+            updateOne: {
+              filter: { BrandCode },
+              update: { $set: { customerDiscount: pct, discountUser: pct } },
+            },
+          });
+        }
+      }
+
+      if (!updates.length) {
+        return res.json({
+          success: true,
+          message: "No matching brands to update",
+          meta: {
+            rows: rows.length,
+            matched: 0,
+            modified: 0,
+            notFound: notFound.length,
+            invalid: invalid.length,
+          },
+          notFound: notFound.slice(0, 50),
+          invalid: invalid.slice(0, 50),
+        });
+      }
+
+      const result = await VdBrand.bulkWrite(updates, { ordered: false });
+
+      return res.json({
+        success: true,
+        message: "Bulk customerDiscount updated",
+        meta: {
+          rows: rows.length,
+          matched: updates.length,
+          modified: result?.modifiedCount || 0,
+          notFound: notFound.length,
+          invalid: invalid.length,
+        },
+        notFound: notFound.slice(0, 50),
+        invalid: invalid.slice(0, 50),
+      });
+    } catch (e) {
+      return res.status(500).json({ success: false, message: e.message });
+    }
+  },
+);
 
 module.exports = router;
