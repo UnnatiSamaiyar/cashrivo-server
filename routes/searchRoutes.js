@@ -6,7 +6,6 @@ const express = require("express");
 const Blog = require("../models/Blogs");
 const Coupon = require("../models/Coupon");
 const Banner = require("../models/bannerModel");
-const DirectBrand = require("../models/DirectBrand");
 let AmazonBanner;
 try {
   AmazonBanner = require("../models/AmazonBanner");
@@ -64,7 +63,6 @@ router.get("/search", async (req, res) => {
       blogs: Math.min(6, limit),
       coupons: Math.min(8, limit),
       banners: Math.min(4, limit),
-      directBrands: Math.min(6, limit),
       amazonBanners: Math.min(4, limit),
     };
 
@@ -167,34 +165,34 @@ router.get("/search", async (req, res) => {
     );
 
     // Direct Brands (admin direct-brands)
-    queries.push(
-      DirectBrand.find({
-        $or: [
-          { name: rx },
-          { offerText: rx },
-          { couponCode: rx },
-          { category: rx },
-        ],
-      })
-        .sort({ priority: -1, updatedAt: -1 })
-        .limit(per.directBrands)
-        .select("name offerText couponCode category")
-        .lean()
-        .then((rows) =>
-          rows
-            .map((d) =>
-              makeItem({
-                type: "brand",
-                title: d.name || "Brand",
-                description: d.offerText || d.couponCode || d.category || "",
-                // best-effort: launchpad is where brand tiles usually live
-                route: "/launchpad",
-                source: "Direct Brands",
-              })
-            )
-            .filter(Boolean)
-        )
-    );
+    // queries.push(
+    //   DirectBrand.find({
+    //     $or: [
+    //       { name: rx },
+    //       { offerText: rx },
+    //       { couponCode: rx },
+    //       { category: rx },
+    //     ],
+    //   })
+    //     .sort({ priority: -1, updatedAt: -1 })
+    //     .limit(per.directBrands)
+    //     .select("name offerText couponCode category")
+    //     .lean()
+    //     .then((rows) =>
+    //       rows
+    //         .map((d) =>
+    //           makeItem({
+    //             type: "brand",
+    //             title: d.name || "Brand",
+    //             description: d.offerText || d.couponCode || d.category || "",
+    //             // best-effort: launchpad is where brand tiles usually live
+    //             route: "/launchpad",
+    //             source: "Direct Brands",
+    //           })
+    //         )
+    //         .filter(Boolean)
+    //     )
+    // );
 
     // Amazon Banners (optional model)
     if (AmazonBanner) {
