@@ -126,9 +126,13 @@ function safeMobile(m) {
 
 function mustNotMockInProd() {
   const isProd = String(process.env.NODE_ENV || "").toLowerCase() === "production";
-  if (isProd && (isOtpMock() || isPaymentTest())) {
-    // hard guard to avoid accidental prod leakage
-    throw new Error("MOCK/TEST modes are not allowed in production");
+  // In production we only hard-block PAYMENT/VD test modes.
+  // OTP can be kept in MOCK for testing/whitelabel flows as requested.
+  if (isProd && isPaymentTest()) {
+    throw new Error("PAYMENT_MODE=TEST is not allowed in production");
+  }
+  if (isProd && isVdTest()) {
+    throw new Error("VD_MODE=MOCK/TEST is not allowed in production");
   }
 }
 
@@ -1210,7 +1214,7 @@ router.post("/verify", auth, async (req, res) => {
 
 /* -----------------------------
  * TEST Compliance APIs (OTP + UPI Binding)
- * Enabled only when OTP_MODE=MOCK and NODE_ENV != production
+ * Enabled only when OTP_MODE=MOCK (OTP testing mode)
  * ----------------------------- */
 
 router.post("/phone/request-otp", auth, async (req, res) => {
@@ -1353,40 +1357,13 @@ router.post("/upi/request-bind-otp", auth, async (req, res) => {
       expiresAt: new Date(Date.now() + 5 * 60 * 1000),
     });
 
-    if (otpMode === "MOCK") {
-      console.log("[UPI_BIND][OTP][MOCK]", { phone: phoneInfo.phone, e164, otp });
-      return res.json({
-        success: true,
-        bindingId: String(binding._id),
-        sessionId: String(session._id),
-        otp,
-        note: "OTP_MODE=MOCK",
-      });
-    }
-
-    if (otpMode !== "MOCK") {
-      await sendOtpSms({
-        toE164Digits: e164,
-        messageText: `Your Cashrivo OTP is ${otp}. Valid for 5 minutes.`,
-      });
-      return res.json({
-        success: true,
-        bindingId: String(binding._id),
-        sessionId: String(session._id),
-        message: "OTP sent",
-        otpMode,
-      });
-    }
-
-    // MOCK: return OTP for local testing only
-    console.log("[UPI_BIND_OTP][MOCK]", { phone: phoneInfo.phone, e164, otp });
+    // OTP_MODE=MOCK: return OTP in response for testing
     return res.json({
       success: true,
       bindingId: String(binding._id),
       sessionId: String(session._id),
       otp,
-      message: "OTP generated (mock)",
-      otpMode,
+      note: "OTP_MODE=MOCK",
     });
   } catch (e) {
     return res.status(500).json({ success: false, message: e.message });
