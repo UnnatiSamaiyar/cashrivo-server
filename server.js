@@ -35,8 +35,8 @@ const giftcardRoutes = require("./routes/giftcards");
 const earnkaroRoute = require("./routes/earnKaroRoute");
 const { startCoupomatedCron } = require("./cron/coupomatedCron");
 const razorpayRoutes = require("./routes/razorpay");
-const directBrandRoutes = require("./routes/directBrands");
 const searchRoutes = require("./routes/searchRoutes");
+const launchpadRoutes = require("./routes/launchpadRoutes");
 
 require('./cron/fetchScheduler');
 
@@ -114,8 +114,8 @@ app.use("/api/vd", vdRoutes);
 app.use("/api/giftcards", giftcardRoutes);
 app.use("/api/earnkaro", earnkaroRoute);
 app.use("/api/razorpay", razorpayRoutes);
-app.use("/api", directBrandRoutes);
 app.use("/api", searchRoutes);
+app.use("/api/launchpad", launchpadRoutes);
 
 
 // -----------------------------
