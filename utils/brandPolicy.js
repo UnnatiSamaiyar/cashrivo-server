@@ -13,11 +13,12 @@ function detectBrandKey({ brandName, brandCode }) {
   const name = norm(brandName);
   const code = norm(brandCode);
 
-  const isAmazon = name.includes("amazon") || code.includes("amazon");
-  if (isAmazon && (name.includes("pay") || code.includes("pay"))) return "AMAZON";
-  if (isAmazon && (name.includes("shopping") || code.includes("shopping"))) return "AMAZON";
+  // Amazon: treat any brand containing "amazon" as AMAZON (covers verification-only dummy names too)
+  if (name.includes("amazon") || code.includes("amazon")) return "AMAZON";
 
+  // Flipkart
   if (name.includes("flipkart") || code.includes("flipkart")) return "FLIPKART";
+
   return "NORMAL";
 }
 
@@ -37,8 +38,8 @@ function policyFor(brandKey) {
     return {
       brandKey,
       upiOnly: true,
-      // ₹50,000 per month per user
-      monthlySpendCapPaise: 50000 * 100,
+      // ₹10,000 per month per user (verification guardrail)
+      monthlySpendCapPaise: 10000 * 100,
       // max 1.25% discount
       maxDiscountPercent: 1.25,
       // ₹625 per month discount cap

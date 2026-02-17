@@ -11,15 +11,9 @@ const VdStore = require("../models/VdStore");
 const GiftcardPurchase = require("../models/GiftcardPurchase");
 const User = require("../models/User");
 
-// SMS OTP (Swipe)
-const { sendOtpSms } = require("../services/swipeSms");
-
-const PhoneOtpSession = require("../models/PhoneOtpSession");
-const UserUpiBinding = require("../models/UserUpiBinding");
 const MonthlyBrandUsage = require("../models/MonthlyBrandUsage");
 
 const { detectBrandKey, policyFor, monthKeyUtc } = require("../utils/brandPolicy");
-const { hashPhone, hashVpa, normalizeVpa } = require("../utils/piiHash");
 
 const { assertUrl, vdPost } = require("../services/vdClient");
 const { getVdToken } = require("../services/vdTokenCache");
@@ -39,6 +33,9 @@ const razorpay = new Razorpay({ key_id, key_secret });
 const PAYMENT_MODE = String(process.env.PAYMENT_MODE || "LIVE").trim().toUpperCase(); // LIVE | TEST
 const OTP_MODE = String(process.env.OTP_MODE || "LIVE").trim().toUpperCase(); // LIVE | MOCK
 const VD_MODE = String(process.env.VD_MODE || "LIVE").trim().toUpperCase(); // LIVE | MOCK | TEST
+
+// Limits
+const MAX_GIFTCARD_QTY = Math.max(1, Math.min(Number(process.env.MAX_GIFTCARD_QTY || 10), 20));
 
 function isPaymentTest() {
   return PAYMENT_MODE === "TEST";
@@ -88,7 +85,8 @@ function maskVouchers(vouchers) {
   try {
     const list = Array.isArray(vouchers)
       ? vouchers
-      : vouchers?.cards ||
+      : vouchers?.items ||
+        vouchers?.cards ||
         vouchers?.CardDetails ||
         vouchers?.card_details ||
         vouchers?.data ||
@@ -146,28 +144,17 @@ function sha256Hex(s) {
   return crypto.createHash("sha256").update(String(s || "")).digest("hex");
 }
 
-async function getVerifiedPhone(userId) {
-  const user = await User.findById(userId).select("phone phoneVerified phoneVerifiedAt").lean();
-  const phone = safeMobile(user?.phone || "");
-  if (!phone || !user?.phoneVerified) return null;
-  return { phone, phoneHash: hashPhone(phone) };
-}
 
-async function getVerifiedUpiBinding({ userId, phoneHash }) {
-  const binding = await UserUpiBinding.findOne({ user: userId, phoneHash, status: "VERIFIED" }).lean();
-  return binding || null;
-}
-
-async function readMonthlyUsage({ brandKey, monthKey, userId, phoneHash, vpaHash }) {
-  const doc = await MonthlyBrandUsage.findOne({ brandKey, monthKey, user: userId, phoneHash, vpaHash }).lean();
+async function readMonthlyUsage({ brandKey, monthKey, userId }) {
+  const doc = await MonthlyBrandUsage.findOne({ brandKey, monthKey, user: userId }).lean();
   return doc || { spendPaise: 0, discountPaise: 0, ordersCount: 0 };
 }
 
-async function incMonthlyUsage({ brandKey, monthKey, userId, phoneHash, vpaHash, spendPaiseInc, discountPaiseInc }) {
+async function incMonthlyUsage({ brandKey, monthKey, userId, spendPaiseInc, discountPaiseInc }) {
   await MonthlyBrandUsage.updateOne(
-    { brandKey, monthKey, user: userId, phoneHash, vpaHash },
+    { brandKey, monthKey, user: userId },
     {
-      $setOnInsert: { brandKey, monthKey, user: userId, phoneHash, vpaHash },
+      $setOnInsert: { brandKey, monthKey, user: userId },
       $inc: {
         spendPaise: Number(spendPaiseInc || 0),
         discountPaise: Number(discountPaiseInc || 0),
@@ -453,35 +440,18 @@ router.post("/order", auth, async (req, res) => {
     const pol = policyFor(brandKey);
     const monthKey = monthKeyUtc();
 
-    // Compliance gating (Amazon/Flipkart)
-    let phoneInfo = null;
-    let binding = null;
-    if (pol.brandKey !== "NORMAL") {
-      phoneInfo = await getVerifiedPhone(req.user?.id);
-      if (!phoneInfo) {
-        return res.status(409).json({
-          success: false,
-          code: "PHONE_VERIFY_REQUIRED",
-          message: "Verified mobile number is required for this brand",
-        });
-      }
-
-      binding = await getVerifiedUpiBinding({ userId: req.user?.id, phoneHash: phoneInfo.phoneHash });
-      if (!binding) {
-        return res.status(409).json({
-          success: false,
-          code: "UPI_BIND_REQUIRED",
-          message: "UPI binding is required for this brand",
-        });
-      }
-    }
 
     const a = Number(amount);
-    const q = Number(qty);
-    if (!Number.isFinite(a) || a <= 0 || !Number.isInteger(q) || q < 1) {
+    const q0 = Number(qty);
+    const q = Number.isInteger(q0) ? q0 : Math.trunc(q0);
+    if (!Number.isFinite(a) || a <= 0 || !Number.isFinite(q0) || !Number.isInteger(q) || q < 1) {
       return res
         .status(400)
         .json({ success: false, message: "Invalid amount/qty" });
+    }
+
+    if (q > MAX_GIFTCARD_QTY) {
+      return res.status(400).json({ success: false, message: `Max quantity per order is ${MAX_GIFTCARD_QTY}` });
     }
 
     // Enforce denom for fixed brands
@@ -524,11 +494,9 @@ let discountPaise = disc > 0 ? Math.round((totalPaise * disc) / 100) : 0;
 
 // Monthly cap checks (preflight)
 if (pol.brandKey !== "NORMAL") {
-  const phoneHash = phoneInfo.phoneHash;
-  const vpaHash = String(binding.vpaHash || hashVpa(binding.vpa));
-  const usage = await readMonthlyUsage({ brandKey: pol.brandKey, monthKey, userId: req.user?.id, phoneHash, vpaHash });
+  const usage = await readMonthlyUsage({ brandKey: pol.brandKey, monthKey, userId: req.user?.id });
 
-  const projectedSpend = Number(usage.spendPaise || 0) + Number(Math.round(total * 100));
+  const projectedSpend = Number(usage.spendPaise || 0) + Number(totalPaise);
   if (pol.monthlySpendCapPaise > 0 && projectedSpend > pol.monthlySpendCapPaise) {
     return res.status(409).json({
       success: false,
@@ -540,7 +508,7 @@ if (pol.brandKey !== "NORMAL") {
 
   if (pol.monthlyDiscountCapPaise > 0) {
     const remaining = Math.max(0, pol.monthlyDiscountCapPaise - Number(usage.discountPaise || 0));
-    if (discountPaise > remaining) discountPaise = remaining; // clamp (safer than reject)
+    if (discountPaise > remaining) discountPaise = remaining; // clamp
   } else if (pol.brandKey === "AMAZON") {
     discountPaise = 0;
   }
@@ -562,6 +530,7 @@ if (!Number.isFinite(payablePaise) || payablePaise <= 0) {
     // Create pending purchase
     const purchase = await GiftcardPurchase.create({
       user: req.user?.id || null,
+      groupId: `GC_${Date.now()}_${Math.random().toString(16).slice(2)}`,
       brandCode,
       brandName: brand.BrandName || "",
       amount: a,
@@ -580,8 +549,6 @@ if (!Number.isFinite(payablePaise) || payablePaise <= 0) {
       policy: {
         brandKey: pol.brandKey,
         monthKey,
-        phoneHash: phoneInfo?.phoneHash || "",
-        vpaHash: binding?.vpaHash || "",
         spendPaise: totalPaise,
         discountPaise,
       },
@@ -641,7 +608,7 @@ router.post("/verify", auth, async (req, res) => {
     // TEST mode verification (no real money)
     const testPaymentToken = body.testPaymentToken;
     const testPaymentMethod = String(body.paymentMethod || "").trim().toLowerCase();
-    const testPayerVpa = normalizeVpa(body.payerVpa || "");
+    const testPayerVpa = String(body.payerVpa || "").trim().toLowerCase();
 
     // LIVE mode verification (Razorpay)
     const razorpay_order_id = body.razorpay_order_id;
@@ -684,7 +651,7 @@ router.post("/verify", auth, async (req, res) => {
     }
 
     // idempotent
-    if (purchase.status === "SUCCESS" || purchase.status === "SUCCESS_TEST") {
+    if (purchase.status === "SUCCESS" || purchase.status === "SUCCESS_TEST" || purchase.status === "SUCCESS_PARTIAL") {
       return res.json({
         success: true,
         message: "Already fulfilled",
@@ -747,56 +714,27 @@ router.post("/verify", auth, async (req, res) => {
     // ---------------------------
     // Brand policy enforcement (Amazon/Flipkart)
     // ---------------------------
-    const enforcedBrandKey = String(purchase.policy?.brandKey || "").trim() || detectBrandKey({ brandName: purchase.brandName, brandCode: purchase.brandCode });
+    const enforcedBrandKey =
+      String(purchase.policy?.brandKey || "").trim() ||
+      detectBrandKey({ brandName: purchase.brandName, brandCode: purchase.brandCode });
     const pol = policyFor(enforcedBrandKey);
     if (pol.brandKey !== "NORMAL") {
-      const phoneInfo = await getVerifiedPhone(req.user?.id);
-      if (!phoneInfo) {
-        return res.status(409).json({ success: false, code: "PHONE_VERIFY_REQUIRED", message: "Verified mobile number is required for this brand" });
-      }
-
-      // buyer mobile must match verified phone
-      if (safeMobile(phoneInfo.phone) !== safeMobile(buyerMobile)) {
-        return res.status(409).json({ success: false, code: "MOBILE_MISMATCH", message: "Buyer mobile must match verified account mobile" });
-      }
-
-      const binding = await getVerifiedUpiBinding({ userId: req.user?.id, phoneHash: phoneInfo.phoneHash });
-      if (!binding) {
-        return res.status(409).json({ success: false, code: "UPI_BIND_REQUIRED", message: "UPI binding is required for this brand" });
-      }
-
-      // Payment method enforcement
+      // Payment method enforcement (no phone OTP / VPA binding)
       let method = "";
-      let payerVpa = "";
       if (isPaymentTest()) {
         method = String(purchase.testPayment?.method || testPaymentMethod || "").toLowerCase();
-        payerVpa = normalizeVpa(purchase.testPayment?.payer_vpa || testPayerVpa || "");
       } else {
-        // fetch payment for method/vpa hard enforcement (brand requirement)
         const pay = await razorpay.payments.fetch(razorpay_payment_id);
         method = String(pay?.method || "").toLowerCase();
-        payerVpa = normalizeVpa(pay?.vpa || pay?.upi?.vpa || "");
       }
 
       if (pol.upiOnly && method !== "upi") {
         return res.status(409).json({ success: false, code: "UPI_ONLY", message: "Only UPI payments are allowed for this brand" });
       }
 
-      // In TEST mode we enforce payerVpa match strictly.
-      if (isPaymentTest()) {
-        if (!payerVpa) {
-          return res.status(409).json({ success: false, code: "PAYER_VPA_REQUIRED", message: "payerVpa is required in PAYMENT_MODE=TEST" });
-        }
-        if (normalizeVpa(binding.vpa) !== payerVpa) {
-          return res.status(409).json({ success: false, code: "VPA_MISMATCH", message: "UPI ID mismatch" });
-        }
-      }
-
       // Monthly cap re-check (defense in depth)
       const monthKey = purchase.policy?.monthKey || monthKeyUtc();
-      const phoneHash = phoneInfo.phoneHash;
-      const vpaHash = String(binding.vpaHash || hashVpa(binding.vpa));
-      const usage = await readMonthlyUsage({ brandKey: pol.brandKey, monthKey, userId: req.user?.id, phoneHash, vpaHash });
+      const usage = await readMonthlyUsage({ brandKey: pol.brandKey, monthKey, userId: req.user?.id });
 
       const spendInc = Number(purchase.policy?.spendPaise || Math.round(Number(purchase.amount || 0) * Number(purchase.qty || 1) * 100));
       const discountInc = Number(purchase.policy?.discountPaise || 0);
@@ -808,14 +746,7 @@ router.post("/verify", auth, async (req, res) => {
         return res.status(409).json({ success: false, code: "MONTHLY_DISCOUNT_CAP_EXCEEDED", message: "Monthly discount cap exceeded for this brand" });
       }
 
-      // Persist latest compliance snapshot (non-breaking)
-      purchase.policy = {
-        ...(purchase.policy || {}),
-        brandKey: pol.brandKey,
-        monthKey,
-        phoneHash,
-        vpaHash,
-      };
+      purchase.policy = { ...(purchase.policy || {}), brandKey: pol.brandKey, monthKey };
     }
 
     // ---------------------------
@@ -852,7 +783,7 @@ router.post("/verify", auth, async (req, res) => {
       order_id: stableOrderId,
       distributor_id: VD_DISTRIBUTOR_ID,
       sku_code: String(purchase.brandCode || ""),
-      no_of_card: Number(purchase.qty || 1),
+      no_of_card: 1,
       amount: Number(purchase.amount || 0),
       receiptNo: stableReceiptNo,
       reqId: stableReqId,
@@ -888,8 +819,6 @@ router.post("/verify", auth, async (req, res) => {
           brandKey: purchase.policy.brandKey,
           monthKey: purchase.policy.monthKey || monthKeyUtc(),
           userId: req.user?.id,
-          phoneHash: purchase.policy.phoneHash,
-          vpaHash: purchase.policy.vpaHash,
           spendPaiseInc: purchase.policy.spendPaise || 0,
           discountPaiseInc: purchase.policy.discountPaise || 0,
         });
@@ -930,8 +859,6 @@ router.post("/verify", auth, async (req, res) => {
           brandKey: purchase.policy.brandKey,
           monthKey: purchase.policy.monthKey || monthKeyUtc(),
           userId: req.user?.id,
-          phoneHash: purchase.policy.phoneHash,
-          vpaHash: purchase.policy.vpaHash,
           spendPaiseInc: purchase.policy.spendPaise || 0,
           discountPaiseInc: purchase.policy.discountPaise || 0,
         });
@@ -984,168 +911,229 @@ router.post("/verify", auth, async (req, res) => {
       });
     }
 
-    // ---------- VD Fulfill ----------
-    let token;
-    let vdOut;
+    // ---------- VD Fulfill (per-card issuance) ----------
+    const qtyWanted = Math.max(1, Number(purchase.qty || 1));
+
+    // Resume-safe: if vouchers already stored, don't re-issue
+    let existingItems = [];
     try {
-      token = await getVdToken();
-      vdOut = await callVdEvc({ token, payloadObj });
+      const existing = purchase.vouchers_enc ? decryptJson(purchase.vouchers_enc) : null;
+      const list =
+        Array.isArray(existing) ? existing :
+        Array.isArray(existing?.items) ? existing.items :
+        Array.isArray(existing?.cards) ? existing.cards :
+        Array.isArray(existing?.CardDetails) ? existing.CardDetails :
+        null;
+      if (Array.isArray(list)) existingItems = list;
+    } catch {}
 
-      // Token might expire earlier; retry once
-      const msgLower = String(
-        vdOut?.responseRaw?.responseMsg || vdOut?.responseRaw?.message || "",
-      ).toLowerCase();
-      const codeStr = String(vdOut?.responseRaw?.responseCode || "");
+    const items = [...existingItems];
+    const errors = [];
+    const vdRaws = Array.isArray(purchase.vdRaw) ? [...purchase.vdRaw] : purchase.vdRaw ? [purchase.vdRaw] : [];
 
-      if (codeStr === "1104" || msgLower.includes("expired")) {
-        token = await getVdToken({ force: true });
-        vdOut = await callVdEvc({ token, payloadObj });
-      }
-    } catch (e) {
-      purchase.status = "VD_FAILED";
-      purchase.vdRaw = { error: String(e?.message || e) };
+    // Keep stable base ids for idempotent retries
+    purchase.vdOrder = {
+      ...(purchase.vdOrder || {}),
+      order_id: stableOrderId,
+      request_ref_no: stableReqId,
+      receiptNo: stableReceiptNo,
+      items: Array.isArray(purchase.vdOrder?.items) ? purchase.vdOrder.items : [],
+    };
+
+    // If already complete, mark success and return
+    if (items.length >= qtyWanted) {
+      const vouchersDone = { mode: "VD_MULTI_CALL", provider: "ValueDesign", items: items.slice(0, qtyWanted) };
+      purchase.vouchers_enc = encryptJson(vouchersDone);
+      purchase.vouchers_masked = maskVouchers(vouchersDone);
+      purchase.status = purchase.status === "SUCCESS_PARTIAL" ? "SUCCESS" : (purchase.status || "SUCCESS");
       await purchase.save();
-
-      return res.status(502).json({
-        success: false,
-        message: "ValueDesign fulfillment error",
-        error: String(e?.message || e),
-        hint: "If you want fallback testing, set ALLOW_FALLBACK_MOCK=true",
-        ...(isDebug ? { debug: { vd_payload_plain: payloadObj } } : {}),
-      });
+      return res.json({ success: true, purchaseId: String(purchase._id), status: purchase.status, vdFallback: false });
     }
 
-    // Determine success
-    const raw = vdOut?.responseRaw || {};
-    const vdStatus = String(raw?.status || "").toUpperCase();
-    const vdCode = String(raw?.responseCode || raw?.code || "").trim();
-    const vdMsg = String(raw?.responseMsg || raw?.message || "").toUpperCase();
+    // Use one token per batch; retry token once if expired
+    let token = await getVdToken();
 
-    // VD success signals (real-world VD pattern)
-    const vdOk =
-      vdCode === "0" ||
-      vdStatus === "SUCCESS" ||
-      vdStatus === "APPROVAL" ||
-      vdStatus === "APPROVED" ||
-      vdMsg.includes("APPROVAL") ||
-      vdMsg.includes("APPROVED") ||
-      vdMsg.includes("SUCCESS");
+    for (let i = items.length; i < qtyWanted; i++) {
+      const cardNo = i + 1;
+      const payloadCard = {
+        ...payloadObj,
+        order_id: `${stableOrderId}-${cardNo}`,
+        receiptNo: `${stableReceiptNo}-${cardNo}`,
+        reqId: `${stableReqId}-${cardNo}`,
+        no_of_card: 1,
+      };
 
-    purchase.vdRaw = vdOut?.responseRaw || null;
+      let vdOut;
+      try {
+        vdOut = await callVdEvc({ token, payloadObj: payloadCard });
 
-    // ---------- OPTION B FALLBACK ----------
-    if (!vdOk) {
-      const code = String(vdOut?.responseRaw?.responseCode || "");
-      const msg = String(vdOut?.responseRaw?.responseMsg || "").toLowerCase();
+        const msgLower = String(vdOut?.responseRaw?.responseMsg || vdOut?.responseRaw?.message || "").toLowerCase();
+        const codeStr = String(vdOut?.responseRaw?.responseCode || "");
 
-      const isInsufficient =
-        code === "16" ||
-        msg.includes("insufficient") ||
-        msg.includes("insufficent") ||
-        msg.includes("low balance");
+        if (codeStr === "1104" || msgLower.includes("expired")) {
+          token = await getVdToken({ force: true });
+          vdOut = await callVdEvc({ token, payloadObj: payloadCard });
+        }
+      } catch (e) {
+        errors.push({ card: cardNo, error: String(e?.message || e) });
+        continue;
+      }
 
-      if (allowFallback && isInsufficient) {
-        const qty = Math.max(1, Number(purchase.qty || 1));
+      const raw = vdOut?.responseRaw || {};
+      const vdStatus = String(raw?.status || "").toUpperCase();
+      const vdCode = String(raw?.responseCode || raw?.code || "").trim();
+      const vdMsg = String(raw?.responseMsg || raw?.message || "").toUpperCase();
 
-        const vouchers = {
-          mode: "FALLBACK_MOCK",
-          provider: "ValueDesign",
-          reason: "INSUFFICIENT_FUNDS",
-          items: Array.from({ length: qty }).map((_, i) => ({
-            code: `TEST-${String(purchase._id).slice(-6)}-${i + 1}`,
+      const vdOk =
+        vdCode === "0" ||
+        vdStatus === "SUCCESS" ||
+        vdStatus === "APPROVAL" ||
+        vdStatus === "APPROVED" ||
+        vdMsg.includes("APPROVAL") ||
+        vdMsg.includes("APPROVED") ||
+        vdMsg.includes("SUCCESS");
+
+      vdRaws.push(vdOut?.responseRaw || null);
+
+      if (!vdOk) {
+        const code = String(raw?.responseCode || "");
+        const msg = String(raw?.responseMsg || "").toLowerCase();
+        const isInsufficient =
+          code === "16" ||
+          msg.includes("insufficient") ||
+          msg.includes("insufficent") ||
+          msg.includes("low balance");
+
+        if (allowFallback && isInsufficient) {
+          // Fill remaining cards with mock so user still gets total qty
+          const remaining = qtyWanted - i;
+          const mockItems = Array.from({ length: remaining }).map((_, k) => ({
+            code: `TEST-${String(purchase._id).slice(-6)}-${cardNo + k}`,
             pin: String(Math.floor(1000 + Math.random() * 9000)),
             amount: Number(purchase.amount || 0),
             currency: "INR",
             expiry: "2027-12-31",
-          })),
-        };
+          }));
+          items.push(...mockItems);
 
-        purchase.vouchers_enc = encryptJson(vouchers);
-        purchase.vouchers_masked = maskVouchers(vouchers);
-        purchase.status = "SUCCESS_TEST";
+          const vouchers = { mode: "PARTIAL_FALLBACK_MOCK", provider: "ValueDesign", items };
+          purchase.vouchers_enc = encryptJson(vouchers);
+          purchase.vouchers_masked = maskVouchers(vouchers);
+          purchase.status = "SUCCESS_TEST";
+          purchase.vdRaw = vdRaws;
 
-        // monthly usage
-        if (purchase.policy?.brandKey && purchase.policy.brandKey !== "NORMAL" && !purchase.policy?._usageCounted) {
-          await incMonthlyUsage({
-            brandKey: purchase.policy.brandKey,
-            monthKey: purchase.policy.monthKey || monthKeyUtc(),
-            userId: req.user?.id,
-            phoneHash: purchase.policy.phoneHash,
-            vpaHash: purchase.policy.vpaHash,
-            spendPaiseInc: purchase.policy.spendPaise || 0,
-            discountPaiseInc: purchase.policy.discountPaise || 0,
-          });
-          purchase.policy._usageCounted = true;
-        }
-        await purchase.save();
+          // monthly usage (idempotent guard)
+          if (purchase.policy?.brandKey && purchase.policy.brandKey !== "NORMAL" && !purchase.policy?._usageCounted) {
+            await incMonthlyUsage({
+              brandKey: purchase.policy.brandKey,
+              monthKey: purchase.policy.monthKey || monthKeyUtc(),
+              userId: req.user?.id,
+              spendPaiseInc: purchase.policy.spendPaise || 0,
+              discountPaiseInc: purchase.policy.discountPaise || 0,
+            });
+            purchase.policy._usageCounted = true;
+          }
 
-        // Email best-effort
-        try {
-          const to = buyerEmail;
-          const subject = `Your Cashrivo Gift Card (TEST) - ${purchase.brandName}`;
-          const html = buildGiftCardEmailHtml({
-            brandName: purchase.brandName,
-            totalAmount: purchase.totalAmount,
-            orderId: purchase._id,
-            vouchers,
-          });
-
-          const info = await sendMail({
-            to,
-            subject,
-            html,
-            text: "Your test gift card is ready. Please login to Cashrivo to view.",
-          });
-
-          purchase.emailDelivery = {
-            sent: true,
-            to,
-            messageId: String(info?.messageId || ""),
-            error: "",
-            sentAt: new Date(),
-          };
           await purchase.save();
-        } catch (e) {
-          purchase.emailDelivery = {
-            sent: false,
-            to: buyerEmail,
-            messageId: "",
-            error: String(e?.message || e),
-            sentAt: null,
-          };
-          await purchase.save();
+
+          // Email delivery (best-effort)
+          try {
+            const to = buyerEmail;
+            const subject = `Your Cashrivo Gift Card (TEST) - ${purchase.brandName}`;
+            const html = buildGiftCardEmailHtml({
+              brandName: purchase.brandName,
+              totalAmount: purchase.totalAmount,
+              orderId: purchase._id,
+              vouchers,
+            });
+            const info = await sendMail({
+              to,
+              subject,
+              html,
+              text: "Your test gift card is ready. Please login to Cashrivo to view.",
+            });
+            purchase.emailDelivery = {
+              sent: true,
+              to,
+              messageId: String(info?.messageId || ""),
+              error: "",
+              sentAt: new Date(),
+            };
+            await purchase.save();
+          } catch (e) {
+            purchase.emailDelivery = {
+              sent: false,
+              to: buyerEmail,
+              messageId: "",
+              error: String(e?.message || e),
+              sentAt: null,
+            };
+            await purchase.save();
+          }
+
+          return res.json({
+            success: true,
+            purchaseId: String(purchase._id),
+            status: purchase.status,
+            vdFallback: true,
+            vd: raw,
+            ...(isDebug ? { debug: { last_vd_payload_plain: payloadCard } } : {}),
+          });
         }
 
-        return res.json({
-          success: true,
-          purchaseId: String(purchase._id),
-          status: purchase.status,
-          vdFallback: true,
-          vd: purchase.vdRaw,
-          ...(isDebug ? { debug: { vd_payload_plain: payloadObj } } : {}),
-        });
+        errors.push({ card: cardNo, vd: raw });
+        continue;
       }
 
-      // No fallback → fail normally
-      purchase.status = "VD_FAILED";
-      await purchase.save();
+      // Success: extract single-card voucher and append
+      const v =
+        extractVouchersFromDecrypted(vdOut?.decryptedJson) ||
+        vdOut?.decryptedJson ||
+        vdOut?.decryptedText;
 
-      return res.status(502).json({
-        success: false,
-        message: "ValueDesign fulfillment failed",
-        vd: vdOut?.responseRaw,
-        ...(isDebug ? { debug: { vd_payload_plain: payloadObj } } : {}),
+      const list =
+        Array.isArray(v) ? v :
+        Array.isArray(v?.items) ? v.items :
+        Array.isArray(v?.cards) ? v.cards :
+        Array.isArray(v?.CardDetails) ? v.CardDetails :
+        null;
+
+      if (Array.isArray(list) && list.length) {
+        // Take first card payload (since we forced no_of_card=1)
+        items.push(list[0]);
+      } else {
+        // store raw voucher object as one item
+        items.push(v);
+      }
+
+      // store per-card ids for audit
+      purchase.vdOrder.items.push({
+        card: cardNo,
+        order_id: payloadCard.order_id,
+        request_ref_no: payloadCard.reqId,
+        receiptNo: payloadCard.receiptNo,
       });
     }
 
-    // ---------- Normal SUCCESS path ----------
-    const vouchers =
-      extractVouchersFromDecrypted(vdOut?.decryptedJson) ||
-      vdOut?.decryptedJson ||
-      vdOut?.decryptedText;
+    const vouchers = { mode: "VD_MULTI_CALL", provider: "ValueDesign", items: items.slice(0, qtyWanted) };
+    purchase.vouchers_enc = encryptJson(vouchers);
+    purchase.vouchers_masked = maskVouchers(vouchers);
+    purchase.vdRaw = vdRaws;
 
-    purchase.vouchers_enc = vouchers ? encryptJson(vouchers) : "";
-    purchase.vouchers_masked = vouchers ? maskVouchers(vouchers) : null;
+    if (errors.length) {
+      purchase.status = items.length ? "SUCCESS_PARTIAL" : "VD_FAILED";
+      await purchase.save();
+      return res.status(207).json({
+        success: false,
+        purchaseId: String(purchase._id),
+        status: purchase.status,
+        message: "Some gift cards could not be generated",
+        successQty: items.length,
+        failedQty: errors.length,
+        errors,
+      });
+    }
+
     purchase.status = "SUCCESS";
 
     // monthly usage
@@ -1154,14 +1142,15 @@ router.post("/verify", auth, async (req, res) => {
         brandKey: purchase.policy.brandKey,
         monthKey: purchase.policy.monthKey || monthKeyUtc(),
         userId: req.user?.id,
-        phoneHash: purchase.policy.phoneHash,
-        vpaHash: purchase.policy.vpaHash,
         spendPaiseInc: purchase.policy.spendPaise || 0,
         discountPaiseInc: purchase.policy.discountPaise || 0,
       });
       purchase.policy._usageCounted = true;
     }
     await purchase.save();
+
+
+    
 
     // Email delivery (best-effort)
     try {
@@ -1217,218 +1206,67 @@ router.post("/verify", auth, async (req, res) => {
  * Enabled only when OTP_MODE=MOCK (OTP testing mode)
  * ----------------------------- */
 
-router.post("/phone/request-otp", auth, async (req, res) => {
+
+// GET /api/giftcards/monthly-limit?brandCode=...&amount=...&qty=...
+// Used by frontend to render the "Monthly Spending Limit" widget for Amazon/Flipkart.
+router.get("/monthly-limit", auth, async (req, res) => {
   try {
-    mustNotMockInProd();
-    if (!isOtpMock()) {
-      return res.status(404).json({ success: false, message: "OTP is not enabled" });
-    }
+    const brandCode = String(req.query.brandCode || "").trim();
+    if (!brandCode) return res.status(400).json({ success: false, message: "brandCode is required" });
 
-    const userId = req.user?.id;
-    const user = await User.findById(userId).select("phone").lean();
-    const phone = safeMobile(req.body?.phone || user?.phone || "");
-    if (!phone) {
-      return res.status(400).json({ success: false, message: "Phone missing" });
-    }
+    // Allow frontend to pass brandName directly (more reliable than DB lookup)
+    const brandNameFromQuery = String(req.query.brandName || "").trim();
 
-    // Persist phone on profile (non-breaking)
-    await User.updateOne({ _id: userId }, { $set: { phone } });
+    const brand = await VdBrand.findOne({ BrandCode: brandCode }).select("BrandCode BrandName").lean();
+    const brandName = brandNameFromQuery || brand?.BrandName || "";
+    const brandKey = detectBrandKey({ brandName, brandCode });
+    const pol = policyFor(brandKey);
+    const monthKey = monthKeyUtc();
 
-    const otp = randDigits(6);
-    const e164 = buildPhoneE164(phone);
-    if (!e164) {
-      return res.status(400).json({ success: false, message: "Invalid phone" });
-    }
-    const phoneHash = hashPhone(phone);
-
-    const session = await PhoneOtpSession.create({
-      user: userId,
-      phoneHash,
-      purpose: "PHONE_VERIFY",
-      otpHash: sha256Hex(otp),
-      attemptsLeft: 5,
-      expiresAt: new Date(Date.now() + 5 * 60 * 1000),
-    });
-
-    // ---- send OTP ----
-    if (isOtpMock()) {
-      // DEV/STAGING ONLY: return OTP in response
+    // Only Amazon/Flipkart have caps. For others, keep it simple.
+    if (pol.brandKey === "NORMAL" || !pol.monthlySpendCapPaise) {
       return res.json({
         success: true,
-        sessionId: String(session._id),
-        otp,
-        note: "OTP_MODE=MOCK",
+        // eligible=false => show "Inactive" in UI
+        eligible: false,
+        trackingActive: false,
+        active: false,
+        brandKey: "NORMAL",
+        monthKey,
+        capPaise: 0,
+        currentPaise: 0,
+        afterPurchasePaise: 0,
+        remainingPaise: 0,
+        utilizationPct: 0,
       });
     }
 
-    // LIVE: send via Swipe
-    await sendOtpSms({
-      destinationAddress: e164,
-      messageText: `Your Cashrivo OTP is ${otp}. Valid for 5 minutes.`,
-    });
+    const amount = Number(req.query.amount || 0);
+    const qty = Math.max(1, Math.trunc(Number(req.query.qty || 1)));
+    const addSpendPaise = Number.isFinite(amount) && amount > 0 ? Math.round(amount * qty * 100) : 0;
+
+    // Monthly usage is tracked per authenticated user (no phone OTP / VPA binding).
+    const usage = await readMonthlyUsage({ brandKey: pol.brandKey, monthKey, userId: req.user?.id });
+
+    const currentPaise = Number(usage?.spendPaise || 0);
+    const afterPurchasePaise = currentPaise + addSpendPaise;
+    const remainingPaise = Math.max(0, pol.monthlySpendCapPaise - currentPaise);
+    const utilizationPct = pol.monthlySpendCapPaise
+      ? (afterPurchasePaise / pol.monthlySpendCapPaise) * 100
+      : 0;
 
     return res.json({
       success: true,
-      sessionId: String(session._id),
-      message: "OTP sent",
-    });
-  } catch (e) {
-    return res.status(500).json({ success: false, message: e.message });
-  }
-});
-
-router.post("/phone/verify-otp", auth, async (req, res) => {
-  try {
-    // works for both MOCK and LIVE (hash-based verification)
-
-    const { sessionId, otp } = req.body || {};
-    if (!sessionId || !otp) {
-      return res.status(400).json({ success: false, message: "sessionId and otp required" });
-    }
-
-    const session = await PhoneOtpSession.findOne({ _id: sessionId, user: req.user?.id });
-    if (!session) return res.status(404).json({ success: false, message: "Session not found" });
-    if (session.expiresAt && session.expiresAt.getTime() < Date.now()) {
-      return res.status(400).json({ success: false, message: "OTP expired" });
-    }
-    if (Number(session.attemptsLeft || 0) <= 0) {
-      return res.status(400).json({ success: false, message: "Too many attempts" });
-    }
-
-    const ok = sha256Hex(String(otp)) === String(session.otpHash);
-    if (!ok) {
-      session.attemptsLeft = Number(session.attemptsLeft || 0) - 1;
-      await session.save();
-      return res.status(400).json({ success: false, message: "Invalid OTP" });
-    }
-
-    await User.updateOne(
-      { _id: req.user?.id },
-      { $set: { phoneVerified: true, phoneVerifiedAt: new Date() } }
-    );
-
-    await PhoneOtpSession.deleteOne({ _id: session._id });
-
-    return res.json({ success: true, verified: true });
-  } catch (e) {
-    return res.status(500).json({ success: false, message: e.message });
-  }
-});
-
-router.post("/upi/request-bind-otp", auth, async (req, res) => {
-  try {
-    mustNotMockInProd();
-    if (!isOtpMock()) {
-      return res.status(404).json({ success: false, message: "OTP is not enabled" });
-    }
-
-    const vpa = normalizeVpa(req.body?.vpa || "");
-    if (!vpa || !vpa.includes("@")) {
-      return res.status(400).json({ success: false, message: "Valid vpa required" });
-    }
-
-    const phoneInfo = await getVerifiedPhone(req.user?.id);
-    if (!phoneInfo) {
-      return res.status(409).json({ success: false, code: "PHONE_VERIFY_REQUIRED", message: "Verify phone first" });
-    }
-
-    const vpaHash = hashVpa(vpa);
-    const binding = await UserUpiBinding.findOneAndUpdate(
-      { user: req.user?.id, vpaHash },
-      {
-        $setOnInsert: { user: req.user?.id, vpaHash },
-        $set: { phoneHash: phoneInfo.phoneHash, vpa, status: "PENDING", verifiedAt: null },
-      },
-      { upsert: true, new: true }
-    );
-
-    const otp = randDigits(6);
-    const e164 = buildPhoneE164(phoneInfo.phone);
-    if (!e164) {
-      return res.status(400).json({ success: false, message: "Invalid phone" });
-    }
-    const session = await PhoneOtpSession.create({
-      user: req.user?.id,
-      phoneHash: phoneInfo.phoneHash,
-      purpose: "UPI_BIND",
-      vpaHash: hashVpa(vpa),
-      otpHash: sha256Hex(otp),
-      attemptsLeft: 5,
-      expiresAt: new Date(Date.now() + 5 * 60 * 1000),
-    });
-
-    // OTP_MODE=MOCK: return OTP in response for testing
-    return res.json({
-      success: true,
-      bindingId: String(binding._id),
-      sessionId: String(session._id),
-      otp,
-      note: "OTP_MODE=MOCK",
-    });
-  } catch (e) {
-    return res.status(500).json({ success: false, message: e.message });
-  }
-});
-
-router.post("/upi/verify-bind-otp", auth, async (req, res) => {
-  try {
-    mustNotMockInProd();
-    if (!isOtpMock()) {
-      return res.status(404).json({ success: false, message: "OTP is not enabled" });
-    }
-
-    const { bindingId, sessionId, otp } = req.body || {};
-    if (!bindingId || !sessionId || !otp) {
-      return res.status(400).json({ success: false, message: "bindingId, sessionId, otp required" });
-    }
-
-    const session = await PhoneOtpSession.findOne({ _id: sessionId, user: req.user?.id, purpose: "UPI_BIND" });
-    if (!session) return res.status(404).json({ success: false, message: "Session not found" });
-    if (session.expiresAt && session.expiresAt.getTime() < Date.now()) {
-      return res.status(400).json({ success: false, message: "OTP expired" });
-    }
-    if (Number(session.attemptsLeft || 0) <= 0) {
-      return res.status(400).json({ success: false, message: "Too many attempts" });
-    }
-
-    const ok = sha256Hex(String(otp)) === String(session.otpHash);
-    if (!ok) {
-      session.attemptsLeft = Number(session.attemptsLeft || 0) - 1;
-      await session.save();
-      return res.status(400).json({ success: false, message: "Invalid OTP" });
-    }
-
-    const phoneInfo = await getVerifiedPhone(req.user?.id);
-    if (!phoneInfo) {
-      return res.status(409).json({ success: false, code: "PHONE_VERIFY_REQUIRED", message: "Verify phone first" });
-    }
-
-    const binding = await UserUpiBinding.findOne({ _id: bindingId, user: req.user?.id });
-    if (!binding) return res.status(404).json({ success: false, message: "Binding not found" });
-
-    binding.phoneHash = phoneInfo.phoneHash;
-    binding.status = "VERIFIED";
-    binding.verifiedAt = new Date();
-    await binding.save();
-
-    await PhoneOtpSession.deleteOne({ _id: session._id });
-
-    return res.json({ success: true, status: binding.status, vpa: binding.vpa });
-  } catch (e) {
-    return res.status(500).json({ success: false, message: e.message });
-  }
-});
-
-router.get("/upi/status", auth, async (req, res) => {
-  try {
-    const phoneInfo = await getVerifiedPhone(req.user?.id);
-    if (!phoneInfo) return res.json({ success: true, phoneVerified: false, binding: null });
-    const binding = await getVerifiedUpiBinding({ userId: req.user?.id, phoneHash: phoneInfo.phoneHash });
-    return res.json({
-      success: true,
-      phoneVerified: true,
-      phone: phoneInfo.phone,
-      binding: binding ? { vpa: binding.vpa, status: binding.status, verifiedAt: binding.verifiedAt } : null,
+      eligible: true,
+      trackingActive: true,
+      active: true,
+      brandKey: pol.brandKey,
+      monthKey,
+      capPaise: pol.monthlySpendCapPaise,
+      currentPaise,
+      afterPurchasePaise,
+      remainingPaise,
+      utilizationPct,
     });
   } catch (e) {
     return res.status(500).json({ success: false, message: e.message });

@@ -18,11 +18,14 @@ const GiftcardPurchaseSchema = new mongoose.Schema(
     // Owner user (required for order history). Kept optional for backward compatibility.
     user: { type: mongoose.Schema.Types.ObjectId, ref: "User", index: true, default: null },
 
+    // Group id for multi-card (qty) purchases
+    groupId: { type: String, index: true, default: "" },
+
     brandCode: { type: String, index: true },
     brandName: String,
 
     amount: Number,
-    qty: Number,
+    qty: { type: Number, default: 1 },
     totalAmount: Number,
 
     buyer: BuyerSchema,
@@ -49,11 +52,12 @@ const GiftcardPurchaseSchema = new mongoose.Schema(
       spendPaise: { type: Number, default: 0 },
       discountPaise: { type: Number, default: 0 },
       _usageCounted: { type: Boolean, default: false },
+      usageCountedQty: { type: Number, default: 0 },
     },
 
     status: {
       type: String,
-      enum: ["PENDING_PAYMENT", "SUCCESS", "SUCCESS_TEST", "VD_FAILED"],
+      enum: ["PENDING_PAYMENT", "SUCCESS", "SUCCESS_TEST", "VD_FAILED", "SUCCESS_PARTIAL"],
       default: "PENDING_PAYMENT",
       index: true,
     },
@@ -61,6 +65,9 @@ const GiftcardPurchaseSchema = new mongoose.Schema(
     vdOrder: {
       order_id: { type: String, index: true },
       request_ref_no: { type: String, index: true },
+      receiptNo: { type: String, default: "" },
+      // Per-card stable identifiers (for qty > 1 issuance)
+      items: { type: [mongoose.Schema.Types.Mixed], default: [] },
     },
 
     // Voucher payload returned by VD. Stored encrypted-at-rest.
