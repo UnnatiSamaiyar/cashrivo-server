@@ -10,6 +10,8 @@ const {
   forgot,
   getUsers,
   updateUser,
+  resetPasswordPhone,
+  migratePhoneFromEmail,
 } = require("../controller/authController");
 
 const Otp = require("../models/Otp");
@@ -137,5 +139,12 @@ router.post("/reset-password", async (req, res) => {
     return res.status(500).json({ message: "Server error." });
   }
 });
+
+
+// ✅ NEW: Phone password reset (only if phoneVerified=true)
+router.post("/reset-password-phone", resetPasswordPhone);
+
+// ✅ NEW: One-time migration to fix old bad records where phone was stored in email
+router.post("/migrate-phone-from-email", migratePhoneFromEmail);
 
 module.exports = router;
