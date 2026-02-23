@@ -47,6 +47,10 @@ const URLS = {
 // Decrypt env (must be set in production)
 const VD_SECRET_KEY = (process.env.VD_SECRET_KEY || "").trim();
 const VD_SECRET_IV = (process.env.VD_SECRET_IV || "").trim();
+// ValueDesign credentials (from .env)
+const VD_DISTRIBUTOR_ID = (process.env.VD_DISTRIBUTOR_ID || "").trim();
+const VD_USERNAME = (process.env.VD_USERNAME || "").trim();
+const VD_PASSWORD = (process.env.VD_PASSWORD || "").trim();
 
 const vdAdminUpload = multer({
   storage: multer.memoryStorage(),
@@ -871,7 +875,7 @@ async function upsertJobState(key, patch) {
 
 async function jobRefreshTokenNow() {
   const start = Date.now();
-  const distributor_id = (process.env.VD_DISTRIBUTOR_ID || "").trim();
+  const distributor_id = VD_DISTRIBUTOR_ID;
 
   await upsertJobState("token", {
     lastRunAt: new Date(),
@@ -880,6 +884,11 @@ async function jobRefreshTokenNow() {
   });
 
   try {
+    if (!distributor_id || !VD_USERNAME || !VD_PASSWORD) {
+      throw new Error(
+        "Missing VD credentials. Required: VD_DISTRIBUTOR_ID, VD_USERNAME, VD_PASSWORD",
+      );
+    }
     const token = await getVdToken({ force: true });
     // optional plain storage (NOT recommended)
     if (
@@ -912,6 +921,52 @@ async function jobRefreshTokenNow() {
     });
     return { ok: false, error: String(e?.message || e) };
   }
+}
+
+/**
+ * AUTO TOKEN REFRESH (module-level)
+ * - Checks DB token expiry periodically
+ * - Refreshes token "ahead of expiry" so token never expires in prod
+ *
+ * Controls (optional):
+ *   VD_TOKEN_AUTO_REFRESH=true|false (default true)
+ *   VD_TOKEN_REFRESH_AHEAD_MIN=360 (default 360 = 6 hours)
+ *   VD_TOKEN_REFRESH_CHECK_MIN=15 (default 15 minutes)
+ */
+async function ensureVdTokenFresh() {
+  const distributor_id = VD_DISTRIBUTOR_ID;
+  if (!distributor_id) return;
+  if (!VD_USERNAME || !VD_PASSWORD) return;
+  if (VD_MODE === "MOCK") return;
+
+  const aheadMin = Number(process.env.VD_TOKEN_REFRESH_AHEAD_MIN || 360);
+  const aheadMs = Math.max(1, aheadMin) * 60 * 1000;
+
+  const doc = await VdToken.findOne({ distributor_id }).lean();
+  const expiresAt = doc?.expiresAt ? new Date(doc.expiresAt).getTime() : 0;
+  const now = Date.now();
+
+  // refresh if missing OR already expired OR about to expire
+  if (!expiresAt || expiresAt <= now || expiresAt - now <= aheadMs) {
+    await jobRefreshTokenNow();
+  }
+}
+
+function startVdTokenAutoRefresh() {
+  const enabled =
+    String(process.env.VD_TOKEN_AUTO_REFRESH || "true").toLowerCase() !== "false";
+  if (!enabled) return;
+
+  // prevent double intervals (PM2 reload / multi-import)
+  if (global.__vdTokenAutoRefreshStarted) return;
+  global.__vdTokenAutoRefreshStarted = true;
+
+  const checkMin = Number(process.env.VD_TOKEN_REFRESH_CHECK_MIN || 15);
+  const checkMs = Math.max(1, checkMin) * 60 * 1000;
+
+  // run once on boot + then interval
+  ensureVdTokenFresh().catch(() => {});
+  setInterval(() => ensureVdTokenFresh().catch(() => {}), checkMs).unref();
 }
 
 async function jobSyncBrandsNow() {
@@ -1269,12 +1324,10 @@ router.post(
 
       const file = req.file;
       if (!file) {
-        return res
-          .status(400)
-          .json({
-            success: false,
-            message: "file is required (multipart field: file)",
-          });
+        return res.status(400).json({
+          success: false,
+          message: "file is required (multipart field: file)",
+        });
       }
 
       const original = String(file.originalname || "");
@@ -1431,12 +1484,10 @@ router.post(
         const ws = wb.Sheets[sheetName];
         rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
       } else {
-        return res
-          .status(400)
-          .json({
-            success: false,
-            message: "Unsupported file type. Only .csv, .xlsx",
-          });
+        return res.status(400).json({
+          success: false,
+          message: "Unsupported file type. Only .csv, .xlsx",
+        });
       }
 
       if (!Array.isArray(rows) || rows.length === 0) {
@@ -1567,5 +1618,8 @@ router.post(
     }
   },
 );
+
+// ✅ start token auto-refresh when routes module is loaded
+startVdTokenAutoRefresh();
 
 module.exports = router;
