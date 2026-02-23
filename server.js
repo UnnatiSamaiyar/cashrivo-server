@@ -37,6 +37,8 @@ const { startCoupomatedCron } = require("./cron/coupomatedCron");
 const razorpayRoutes = require("./routes/razorpay");
 const searchRoutes = require("./routes/searchRoutes");
 const launchpadRoutes = require("./routes/launchpadRoutes");
+const rivoPointsRoutes = require("./routes/rivoPoints");
+const seoSettingsRoutes = require("./routes/seoSettingsRoutes");
 
 require('./cron/fetchScheduler');
 
@@ -116,6 +118,10 @@ app.use("/api/earnkaro", earnkaroRoute);
 app.use("/api/razorpay", razorpayRoutes);
 app.use("/api", searchRoutes);
 app.use("/api/launchpad", launchpadRoutes);
+app.use("/api", seoSettingsRoutes);
+
+// Rivo Points (balance + transactions)
+app.use("/api/rivo", rivoPointsRoutes);
 
 
 // -----------------------------

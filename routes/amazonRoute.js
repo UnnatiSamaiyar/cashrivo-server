@@ -114,6 +114,43 @@ router.get("/all-items", async (req, res) => {
   }
 });
 
+/**
+ * GET /api/preview-trending
+ * Just fetch & return API response (no DB save)
+ */
+router.get("/preview-trending", async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
 
+    const mockReq = { query: { page, limit } };
+
+    const apiResponse = await new Promise((resolve) => {
+      const mockRes = {
+        json: (data) => resolve(data),
+        status: () => ({
+          json: (data) => resolve({ success: false, ...data }),
+        }),
+      };
+
+      searchTrendingIndia(mockReq, mockRes);
+    });
+
+    return res.json({
+      success: true,
+      page,
+      limit,
+      totalItems: apiResponse?.items?.length || 0,
+      data: apiResponse,
+    });
+
+  } catch (err) {
+    console.error("❌ Preview fetch error:", err);
+    return res.status(500).json({
+      success: false,
+      error: err.message,
+    });
+  }
+});
 
 module.exports = router;

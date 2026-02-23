@@ -7,7 +7,8 @@ const upload = getMulterUploader("uploads/amazonbanners");
 
 router.get("/amazon-banners-get", async (req, res) => {
   try {
-    const banners = await AmazonBanner.find().sort({ createdAt: -1 });
+    const banners = await AmazonBanner.find()
+      .sort({ priority: 1 }); // ✅ 1 = ascending (1,2,3,4)
     res.json(banners);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -16,7 +17,7 @@ router.get("/amazon-banners-get", async (req, res) => {
 
 router.post("/amazon-banners-post", upload.single("image"), async (req, res) => {
   try {
-    const { title, description, link } = req.body;
+    const { title, description, link, priority } = req.body; // ✅ changed
 
     if (!req.file) return res.status(400).json({ error: "Image is required" });
 
@@ -24,6 +25,7 @@ router.post("/amazon-banners-post", upload.single("image"), async (req, res) => 
       title,
       description,
       link,
+      priority: Number(priority) || 1, 
       imageUrl: `/uploads/amazonbanners/${req.file.filename}`,
     });
 
@@ -36,9 +38,14 @@ router.post("/amazon-banners-post", upload.single("image"), async (req, res) => 
 
 router.put("/amazon-banners-edit/:id", upload.single("image"), async (req, res) => {
   try {
-    const { title, description, link } = req.body;
+    const { title, description, link, priority } = req.body; // ✅ changed
 
-    const updateData = { title, description, link };
+    const updateData = {
+      title,
+      description,
+      link,
+      priority: Number(priority) || 1, // ✅ NEW
+    };
 
     if (req.file) {
       updateData.imageUrl = `/uploads/amazonbanners/${req.file.filename}`;

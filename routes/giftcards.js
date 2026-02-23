@@ -10,6 +10,7 @@ const VdBrand = require("../models/VdBrand");
 const VdStore = require("../models/VdStore");
 const GiftcardPurchase = require("../models/GiftcardPurchase");
 const User = require("../models/User");
+const RivoPointTransaction = require("../models/RivoPointTransaction");
 
 const MonthlyBrandUsage = require("../models/MonthlyBrandUsage");
 
@@ -142,6 +143,86 @@ function randDigits(len = 6) {
 
 function sha256Hex(s) {
   return crypto.createHash("sha256").update(String(s || "")).digest("hex");
+}
+
+function randInt(min, max) {
+  const a = Math.ceil(Number(min));
+  const b = Math.floor(Number(max));
+  return Math.floor(Math.random() * (b - a + 1)) + a;
+}
+
+/**
+ * ✅ Award Rivo Points once per successful purchase.
+ * - 5% to 10% of buying price (purchase.totalAmount)
+ * - Idempotent via unique index (user+sourceType+sourceId)
+ */
+async function awardRivoPointsForPurchase({ userId, purchase }) {
+  if (!userId || !purchase?._id) return { awarded: false };
+
+  // Only award for fulfilled states
+  const st = String(purchase.status || "");
+  if (!(st === "SUCCESS" || st === "SUCCESS_TEST" || st === "SUCCESS_PARTIAL")) {
+    return { awarded: false };
+  }
+
+  const sourceType = "GIFT_CARD_PURCHASE";
+  const sourceId = purchase._id;
+
+  // If already awarded, return existing snapshot
+  const existing = await RivoPointTransaction.findOne({ user: userId, sourceType, sourceId }).lean();
+  if (existing) {
+    return {
+      awarded: false,
+      points: Number(existing.points || 0),
+      percent: existing.percent,
+      newBalance: existing.balanceAfter,
+      transactionId: String(existing._id),
+    };
+  }
+
+  const buyingPrice = Number(purchase.totalAmount || 0);
+  if (!Number.isFinite(buyingPrice) || buyingPrice <= 0) return { awarded: false };
+
+  const percent = randInt(5, 10);
+  const points = Math.max(1, Math.floor((buyingPrice * percent) / 100));
+
+  // Update balance first
+  const updatedUser = await User.findByIdAndUpdate(
+    userId,
+    { $inc: { rivoPoints: points } },
+    { new: true, select: "rivoPoints" }
+  );
+
+  const newBalance = Number(updatedUser?.rivoPoints || 0);
+
+  // Create transaction (unique index enforces idempotency)
+  try {
+    const tx = await RivoPointTransaction.create({
+      user: userId,
+      direction: "CREDIT",
+      points,
+      percent,
+      amount: buyingPrice,
+      balanceAfter: newBalance,
+      sourceType,
+      sourceId,
+      note: `Gift card purchase reward (${percent}%)`,
+    });
+    return { awarded: true, points, percent, newBalance, transactionId: String(tx._id) };
+  } catch (e) {
+    // If a race created the tx first, fetch it and return
+    if (String(e?.code) === "11000") {
+      const tx = await RivoPointTransaction.findOne({ user: userId, sourceType, sourceId }).lean();
+      return {
+        awarded: false,
+        points: Number(tx?.points || 0),
+        percent: tx?.percent,
+        newBalance: tx?.balanceAfter,
+        transactionId: tx?._id ? String(tx._id) : undefined,
+      };
+    }
+    throw e;
+  }
 }
 
 
@@ -652,11 +733,13 @@ router.post("/verify", auth, async (req, res) => {
 
     // idempotent
     if (purchase.status === "SUCCESS" || purchase.status === "SUCCESS_TEST" || purchase.status === "SUCCESS_PARTIAL") {
+      const rivo = await awardRivoPointsForPurchase({ userId: req.user?.id, purchase });
       return res.json({
         success: true,
         message: "Already fulfilled",
         purchaseId: String(purchase._id),
         status: purchase.status,
+        rivo,
       });
     }
 
@@ -825,11 +908,13 @@ router.post("/verify", auth, async (req, res) => {
         purchase.policy._usageCounted = true;
       }
       await purchase.save();
+      const rivo = await awardRivoPointsForPurchase({ userId: req.user?.id, purchase });
       return res.json({
         success: true,
         purchaseId: String(purchase._id),
         status: purchase.status,
         vdFallback: false,
+        rivo,
       });
     }
 
@@ -901,13 +986,14 @@ router.post("/verify", auth, async (req, res) => {
         };
         await purchase.save();
       }
-
+      const rivo = await awardRivoPointsForPurchase({ userId: req.user?.id, purchase });
       return res.json({
         success: true,
         purchaseId: String(purchase._id),
         status: purchase.status,
         vdFallback: true,
         test: true,
+        rivo,
       });
     }
 
@@ -1071,12 +1157,15 @@ router.post("/verify", auth, async (req, res) => {
             await purchase.save();
           }
 
+          const rivo = await awardRivoPointsForPurchase({ userId: req.user?.id, purchase });
+
           return res.json({
             success: true,
             purchaseId: String(purchase._id),
             status: purchase.status,
             vdFallback: true,
             vd: raw,
+            rivo,
             ...(isDebug ? { debug: { last_vd_payload_plain: payloadCard } } : {}),
           });
         }
@@ -1189,11 +1278,14 @@ router.post("/verify", auth, async (req, res) => {
       await purchase.save();
     }
 
+    const rivo = await awardRivoPointsForPurchase({ userId: req.user?.id, purchase });
+
     return res.json({
       success: true,
       purchaseId: String(purchase._id),
       status: purchase.status,
       vdFallback: false,
+      rivo,
       ...(isDebug ? { debug: { vd_payload_plain: payloadObj } } : {}),
     });
   } catch (e) {
