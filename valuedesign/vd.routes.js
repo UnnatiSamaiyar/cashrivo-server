@@ -11,6 +11,14 @@ const VdEvcOrder = require("../models/VdEvcOrder");
 const VdWallet = require("../models/VdWallet");
 const path = require("path");
 const multer = require("multer");
+const fs = require("fs");
+let getMulterUploader = null;
+try {
+  // preferred location
+  getMulterUploader = require("../middleware/upload");
+} catch (e) {
+  try { getMulterUploader = require("./upload"); } catch (e2) { getMulterUploader = null; }
+}
 
 const router = express.Router();
 
@@ -1618,6 +1626,145 @@ router.post(
     }
   },
 );
+
+/**
+ * POST /api/vd/admin/brands/bulk-images
+ * multipart/form-data: files=<images[]>
+ *
+ * ✅ Saves images to local disk (uploads/vd-brands)
+ * ✅ Auto file naming: uses original filename (without extension), slugified.
+ * ✅ Auto DB mapping:
+ *    - First tries BrandCode == <filename base> (case-insensitive)
+ *    - Else tries BrandName == <filename base> (case-insensitive)
+ * ✅ Updates VdBrand.Images with public path: /uploads/vd-brands/<savedFileName>
+ *
+ * NOTE:
+ * - Keep your upload file names like: "AMZ.png" (BrandCode) OR "Tanishq Jewellery.png" (BrandName)
+ * - Server must expose /uploads as static (usually: app.use("/uploads", express.static(...))).
+ */
+const vdBrandImagesUploader =
+  (getMulterUploader &&
+    getMulterUploader("uploads/vd-brands", {
+      filename: (req, file) => {
+        const ext = path.extname(file.originalname || "").toLowerCase();
+        const base = path
+          .basename(file.originalname || "", ext)
+          .trim()
+          .toLowerCase()
+          .replace(/\s+/g, "-")
+          .replace(/[^a-z0-9\-_.]/g, "")
+          .replace(/\-+/g, "-")
+          .replace(/^\-+|\-+$/g, "");
+
+        const safeBase = base || String(Date.now());
+        return `${safeBase}${ext || ".png"}`;
+      },
+    })) ||
+  multer({
+    storage: multer.diskStorage({
+      destination: (req, file, cb) => {
+        const dir = path.join(__dirname, "..", "uploads", "vd-brands");
+        try {
+          fs.mkdirSync(dir, { recursive: true });
+        } catch (e) {}
+        cb(null, dir);
+      },
+      filename: (req, file, cb) => {
+        const ext = path.extname(file.originalname || "").toLowerCase();
+        const base = path
+          .basename(file.originalname || "", ext)
+          .trim()
+          .toLowerCase()
+          .replace(/\s+/g, "-")
+          .replace(/[^a-z0-9\-_.]/g, "")
+          .replace(/\-+/g, "-")
+          .replace(/^\-+|\-+$/g, "");
+
+        const safeBase = base || String(Date.now());
+        cb(null, `${safeBase}${ext || ".png"}`);
+      },
+    }),
+  });
+
+router.post(
+  "/admin/brands/bulk-images",
+  vdBrandImagesUploader.array("files", 500),
+  async (req, res) => {
+    try {
+      if (!requireAdminKey(req, res)) return;
+
+      const files = Array.isArray(req.files) ? req.files : [];
+      if (!files.length) {
+        return res
+          .status(400)
+          .json({ success: false, message: "No files received (field: files)" });
+      }
+
+      const results = [];
+      const notMatched = [];
+
+      // For faster lookups: build a map of BrandCode lower -> brand, and BrandName lower -> brand
+      const allBrands = await VdBrand.find({}, { BrandCode: 1, BrandName: 1 }).lean();
+      const byCode = new Map();
+      const byName = new Map();
+      for (const b of allBrands || []) {
+        if (b.BrandCode) byCode.set(String(b.BrandCode).trim().toLowerCase(), b);
+        if (b.BrandName) byName.set(String(b.BrandName).trim().toLowerCase(), b);
+      }
+
+      for (const f of files) {
+        const savedFile = f.filename || "";
+        const publicPath = `/uploads/vd-brands/${savedFile}`;
+        const ext = path.extname(f.originalname || "").toLowerCase();
+        const base = path
+          .basename(f.originalname || "", ext)
+          .trim()
+          .toLowerCase();
+
+        const match =
+          byCode.get(base) ||
+          byName.get(base) ||
+          null;
+
+        if (!match) {
+          notMatched.push({
+            original: f.originalname,
+            saved: savedFile,
+            path: publicPath,
+            reason:
+              "No BrandCode/BrandName match. Rename file to BrandCode OR exact BrandName.",
+          });
+          continue;
+        }
+
+        await VdBrand.updateOne(
+          { _id: match._id },
+          { $set: { Images: publicPath } },
+          { upsert: false }
+        );
+
+        results.push({
+          BrandCode: match.BrandCode || "",
+          BrandName: match.BrandName || "",
+          original: f.originalname,
+          saved: savedFile,
+          path: publicPath,
+        });
+      }
+
+      return res.json({
+        success: true,
+        uploaded: files.length,
+        updated: results.length,
+        results,
+        notMatched,
+      });
+    } catch (e) {
+      return res.status(500).json({ success: false, message: e.message });
+    }
+  }
+);
+
 
 // ✅ start token auto-refresh when routes module is loaded
 startVdTokenAutoRefresh();
