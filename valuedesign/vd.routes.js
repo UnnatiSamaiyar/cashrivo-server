@@ -862,6 +862,18 @@ const GiftcardPurchase = require("../models/GiftcardPurchase");
 const VdToken = require("../models/VdToken");
 const VdJobState = require("../models/VdJobState");
 
+
+async function ensurePopularityFieldForExistingBrands() {
+  try {
+    await VdBrand.updateMany(
+      { popularity: { $exists: false } },
+      { $set: { popularity: false } }
+    );
+  } catch (e) {
+    // ignore migration issues at boot
+  }
+}
+
 function requireAdminKey(req, res) {
   const adminKey = process.env.ADMIN_SYNC_KEY || "";
   if (!adminKey) return true; // open
@@ -1198,6 +1210,8 @@ router.patch("/admin/brands/update", async (req, res) => {
 
     if (req.body.enabled !== undefined)
       patch.enabled = Boolean(req.body.enabled);
+    if (req.body.popularity !== undefined)
+      patch.popularity = Boolean(req.body.popularity);
     if (req.body.notes !== undefined)
       patch.notes = String(req.body.notes || "");
 
@@ -1765,6 +1779,37 @@ router.post(
   }
 );
 
+router.post("/admin/brand/popularity", async (req, res) => {
+  try {
+    if (!requireAdminKey(req, res)) return;
+
+    const brandCode = String(req.body?.brandCode || req.body?.BrandCode || "").trim();
+    if (!brandCode) {
+      return res.status(400).json({ success: false, message: "brandCode required" });
+    }
+
+    const popularity = Boolean(req.body?.popularity);
+
+    const brand = await VdBrand.findOneAndUpdate(
+      { BrandCode: brandCode },
+      { $set: { popularity } },
+      { new: true }
+    ).lean();
+
+    if (!brand) {
+      return res.status(404).json({ success: false, message: "Brand not found" });
+    }
+
+    res.json({ success: true, brand });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: err.message || "Failed to update popularity" });
+  }
+});
+
+
+// ensure legacy brand documents also get popularity=false
+ensurePopularityFieldForExistingBrands();
 
 // ✅ start token auto-refresh when routes module is loaded
 startVdTokenAutoRefresh();

@@ -19,7 +19,7 @@ const VdBrandSchema = new mongoose.Schema(
     customerDiscount: { type: String, default: "" },
 
     // ✅ NEW: admin-set user discount % (store what admin entered, in %)
-   
+    discountUser: { type: String, default: "" },
 
     enabled: { type: Boolean, default: true, index: true },
     notes: { type: String, default: "" },
@@ -37,8 +37,12 @@ const VdBrandSchema = new mongoose.Schema(
     RedeemSteps: { type: Array, default: [] },
 
     raw: { type: Object, default: {} },
+    popularity: {
+      type: Boolean,
+      default: false,
+    },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 VdBrandSchema.index({ BrandCode: 1 }, { unique: false });
