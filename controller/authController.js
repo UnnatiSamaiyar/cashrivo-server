@@ -165,6 +165,29 @@ exports.updateUser = async (req, res) => {
   }
 };
 
+
+// GET SINGLE USER BY userId
+exports.getUserByUserId = async (req, res) => {
+  const { userId } = req.params;
+
+  try {
+    const user = await User.findOne({ userId }).select("-password");
+
+    if (!user) {
+      return sendError(res, 404, "USER_NOT_FOUND", "User not found");
+    }
+
+    return res.status(200).json({
+      success: true,
+      user,
+      message: "User fetched successfully",
+    });
+  } catch (err) {
+    console.error(err);
+    return sendError(res, 500, "SERVER_ERROR", "Server error");
+  }
+};
+
 // OPTIONAL: GET ALL USERS
 exports.getUsers = async (req, res) => {
   try {

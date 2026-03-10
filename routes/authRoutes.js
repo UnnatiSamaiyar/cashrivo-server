@@ -9,6 +9,7 @@ const {
   login,
   forgot,
   getUsers,
+  getUserByUserId,
   updateUser,
   resetPasswordPhone,
   migratePhoneFromEmail,
@@ -31,6 +32,7 @@ router.post("/signup", signup);
 router.post("/login", login);
 router.post("/forgot", forgot);
 router.get("/users", getUsers);
+router.get("/users/:userId", getUserByUserId);
 router.put("/users/:userId", updateUser);
 
 router.post("/send-otp", async (req, res) => {
