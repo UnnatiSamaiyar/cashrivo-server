@@ -266,6 +266,61 @@ function decryptVdResponseData(encryptedStr) {
   return { text, json: safeJsonParse(text) };
 }
 
+function toUiVoucherCard(item = {}, fallback = {}) {
+  const amount = item?.balanceTotal ?? item?.amount ?? fallback?.amount ?? "";
+  return {
+    getCardNo: item?.getCardNo || item?.card_no || item?.CardNo || item?.code || item?.voucher_no || "",
+    getCardPin: item?.getCardPin || item?.pin || item?.CardPin || item?.voucher_pin || "",
+    getCardStatus: item?.getCardStatus || item?.status || item?.CardStatus || "ACTIVE",
+    getExpiryDate: item?.getExpiryDate || item?.expiry || item?.Expiry || item?.valid_till || "",
+    balanceBasic: item?.balanceBasic || "",
+    balanceBonus: item?.balanceBonus || "",
+    balanceTotal: amount !== undefined && amount !== null ? String(amount) : "",
+    bonusGiven: item?.bonusGiven || "0",
+    dealNo: item?.dealNo || fallback?.dealNo || "",
+    receiptNo: item?.receiptNo || fallback?.receiptNo || "",
+  };
+}
+
+function normalizeOrderVouchersForUi({ order, decryptedVdJson, decryptedStoredVouchers }) {
+  const direct = decryptedVdJson;
+  if (direct && Array.isArray(direct?.brand_details) && direct.brand_details.length) {
+    return direct;
+  }
+
+  const stored = decryptedStoredVouchers;
+  const rawItems =
+    (Array.isArray(stored) ? stored : null) ||
+    (Array.isArray(stored?.items) ? stored.items : null) ||
+    (Array.isArray(stored?.cards) ? stored.cards : null) ||
+    (Array.isArray(stored?.CardDetails) ? stored.CardDetails : null);
+
+  if (Array.isArray(rawItems) && rawItems.length) {
+    return {
+      wallet_balance: String(order?.amount || order?.totalAmount || ""),
+      brand_details: [
+        {
+          product_name: order?.brandName || order?.brandCode || "Gift Card",
+          voucher_name: order?.brandCode || order?.brandName || "Gift Card",
+          items: rawItems.map((item, idx) =>
+            toUiVoucherCard(item, {
+              amount: order?.amount,
+              receiptNo: Array.isArray(order?.vdOrder?.items)
+                ? order.vdOrder.items?.[idx]?.receiptNo || order?.vdOrder?.receiptNo || ""
+                : order?.vdOrder?.receiptNo || "",
+              dealNo: Array.isArray(order?.vdOrder?.items)
+                ? order.vdOrder.items?.[idx]?.order_id || ""
+                : order?.vdOrder?.order_id || "",
+            })
+          ),
+        },
+      ],
+    };
+  }
+
+  return null;
+}
+
 async function callVdEvc({ token, payloadObj }) {
   const { EVC } = vdUrls();
   assertUrl(EVC, "VD_EVC_URL");
@@ -1408,21 +1463,46 @@ router.get("/order/:id", auth, async (req, res) => {
       return res.status(403).json({ success: false });
     }
 
-    let vdDecrypted = null;
+    const vdRawEntries = Array.isArray(order?.vdRaw)
+      ? order.vdRaw
+      : order?.vdRaw
+        ? [order.vdRaw]
+        : [];
 
-    if (order?.vdRaw?.data) {
-      // 🔑 THIS IS THE ONLY SOURCE
-      const dec = decryptVdResponseData(order.vdRaw.data);
-      vdDecrypted = dec?.json || null;
+    let vdDecrypted = null;
+    const sanitizedVdRaw = vdRawEntries.map((entry) => {
+      const encryptedData = typeof entry?.data === "string" ? entry.data : "";
+      const dec = encryptedData ? decryptVdResponseData(encryptedData) : { text: "", json: null };
+      if (!vdDecrypted && dec?.json) vdDecrypted = dec.json;
+      return {
+        ...entry,
+        data: undefined,
+        decrypted: dec?.json || entry?.decrypted || entry?.decryptedJson || entry?.dataDecrypted || entry?.data_decrypted || entry?.decrypted_data || null,
+      };
+    });
+
+    let decryptedStoredVouchers = null;
+    try {
+      decryptedStoredVouchers = order?.vouchers_enc ? decryptJson(order.vouchers_enc) : null;
+    } catch {
+      decryptedStoredVouchers = null;
     }
+
+    const normalizedDecrypted = normalizeOrderVouchersForUi({
+      order,
+      decryptedVdJson: vdDecrypted,
+      decryptedStoredVouchers,
+    });
 
     const safeOrder = {
       ...order,
-      vdRaw: {
-        ...order.vdRaw,
-        data: undefined,              // ❌ never send encrypted blob
-        decrypted: vdDecrypted,       // ✅ SEND THIS
-      },
+      vouchers_enc: undefined,
+      vouchers: normalizedDecrypted || order?.vouchers_masked || null,
+      vdDecrypted: normalizedDecrypted,
+      decrypted: normalizedDecrypted,
+      vdRaw: Array.isArray(order?.vdRaw)
+        ? sanitizedVdRaw
+        : sanitizedVdRaw[0] || null,
     };
 
     return res.json({ success: true, order: safeOrder });
