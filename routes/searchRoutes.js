@@ -6,6 +6,7 @@ const express = require("express");
 const Blog = require("../models/Blogs");
 const Coupon = require("../models/Coupon");
 const Banner = require("../models/bannerModel");
+const VdBrand = require("../models/VdBrand");
 let AmazonBanner;
 try {
   AmazonBanner = require("../models/AmazonBanner");
@@ -26,7 +27,7 @@ function safeRegex(q) {
   return String(q || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function makeItem({ type, title, description, route, source, score }) {
+function makeItem({ type, title, description, route, source, score, brandCode }) {
   if (!title || !route) return null;
   return {
     type,
@@ -35,6 +36,7 @@ function makeItem({ type, title, description, route, source, score }) {
     route,
     source: source || undefined,
     score: typeof score === "number" ? score : undefined,
+    brandCode: brandCode ? String(brandCode) : undefined,
   };
 }
 
@@ -64,6 +66,7 @@ router.get("/search", async (req, res) => {
       coupons: Math.min(8, limit),
       banners: Math.min(4, limit),
       amazonBanners: Math.min(4, limit),
+      giftcards: Math.min(8, limit),
     };
 
     const queries = [];
@@ -194,6 +197,54 @@ router.get("/search", async (req, res) => {
     //     )
     // );
 
+    // Gift Cards
+    queries.push(
+      VdBrand.find({
+        $or: [
+          { BrandName: rx },
+          { BrandCode: rx },
+          { Category: rx },
+          { Description: rx },
+        ],
+      })
+        .sort({ popularity: -1, updatedAt: -1, createdAt: -1 })
+        .limit(per.giftcards)
+        .select("BrandName BrandCode Category Description popularity")
+        .lean()
+        .then((rows) =>
+          rows
+            .map((g) => {
+              const title = String(g.BrandName || "").trim();
+              const brandCode = String(g.BrandCode || "").trim();
+              const description =
+                g.Description ||
+                (g.Category ? `Category: ${g.Category}` : "") ||
+                (brandCode ? `Code: ${brandCode}` : "");
+
+              const qLower = q.toLowerCase();
+              const titleLower = title.toLowerCase();
+              const codeLower = brandCode.toLowerCase();
+
+              let score = 0;
+              if (titleLower === qLower || codeLower === qLower) score += 1000;
+              if (titleLower.startsWith(qLower) || codeLower.startsWith(qLower)) score += 200;
+              if (titleLower.includes(qLower) || codeLower.includes(qLower)) score += 100;
+              if (g.popularity) score += 15;
+
+              return makeItem({
+                type: "giftcard",
+                title: title || brandCode || "Gift Card",
+                description,
+                route: brandCode ? `/gift-cards/${encodeURIComponent(brandCode)}` : "",
+                source: "Gift Cards",
+                score,
+                brandCode,
+              });
+            })
+            .filter(Boolean)
+        )
+    );
+
     // Amazon Banners (optional model)
     if (AmazonBanner) {
       queries.push(
@@ -226,6 +277,10 @@ router.get("/search", async (req, res) => {
     // Lightweight ranking: title match first
     const qLower = q.toLowerCase();
     flat.sort((a, b) => {
+      const as = Number(a.score || 0);
+      const bs = Number(b.score || 0);
+      if (as !== bs) return bs - as;
+
       const at = String(a.title || "").toLowerCase();
       const bt = String(b.title || "").toLowerCase();
       const aStarts = at.startsWith(qLower) ? 1 : 0;

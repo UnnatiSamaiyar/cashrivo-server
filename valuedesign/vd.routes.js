@@ -732,24 +732,41 @@ router.post("/wallet", async (req, res) => {
 
 // --- ADMIN READ APIs (MongoDB se) ---
 
-// GET /api/vd/db/brands?search=&page=1&limit=50
+// GET /api/vd/db/brands?search=&q=&category=&page=1&limit=50
 router.get("/db/brands", async (req, res) => {
   try {
-    const search = (req.query.search || "").toString().trim();
+    const page = Math.max(parseInt(req.query.page || "1", 10), 1);
+    const limit = Math.min(Math.max(parseInt(req.query.limit || "50", 10), 1), 500);
+    const search = (req.query.search || req.query.q || "").toString().trim();
+    const category = (req.query.category || "").toString().trim();
 
     const q = {};
     if (search) {
       q.$or = [
         { BrandCode: { $regex: search, $options: "i" } },
         { BrandName: { $regex: search, $options: "i" } },
+        { Category: { $regex: search, $options: "i" } },
       ];
     }
+    if (category && category.toLowerCase() !== "all") {
+      q.Category = category;
+    }
 
-    const items = await VdBrand.find(q).sort({ updatedAt: -1 }).lean(); // faster, no mongoose overhead
+    const [items, total] = await Promise.all([
+      VdBrand.find(q)
+        .sort({ popularity: -1, updatedAt: -1, BrandName: 1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean(),
+      VdBrand.countDocuments(q),
+    ]);
 
     res.json({
       success: true,
-      total: items.length,
+      page,
+      limit,
+      total,
+      pages: Math.max(1, Math.ceil(total / limit)),
       items,
     });
   } catch (e) {
