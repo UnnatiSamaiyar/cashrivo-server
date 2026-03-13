@@ -105,6 +105,29 @@ function safeHeadersForLog(headers) {
   return clone;
 }
 
+function parseJsonish(value, fallback) {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value === "object") return value;
+  const s = String(value || "").trim();
+  if (!s) return fallback;
+  try {
+    return JSON.parse(s);
+  } catch {
+    throw new Error("Invalid JSON field");
+  }
+}
+
+function normalizeNullableNumber(v) {
+  if (v === undefined) return undefined;
+  if (v === null) return null;
+  const s = String(v).trim();
+  if (!s) return null;
+  const n = Number(s);
+  if (!Number.isFinite(n) || n < 0) throw new Error("Invalid numeric field");
+  return n;
+}
+
 async function logApi({
   type,
   req,
@@ -251,6 +274,14 @@ router.post("/brands", async (req, res) => {
                 ImportantInstruction: b?.ImportantInstruction || null,
                 RedeemSteps: Array.isArray(b?.RedeemSteps) ? b.RedeemSteps : [],
                 raw: b || {},
+              },
+              $setOnInsert: {
+                enabled: true,
+                popularity: false,
+              },
+              $setOnInsert: {
+                enabled: true,
+                popularity: false,
               },
             },
             upsert: true,
@@ -880,12 +911,18 @@ const VdToken = require("../models/VdToken");
 const VdJobState = require("../models/VdJobState");
 
 
-async function ensurePopularityFieldForExistingBrands() {
+async function ensureBrandAdminFieldsForExistingBrands() {
   try {
-    await VdBrand.updateMany(
-      { popularity: { $exists: false } },
-      { $set: { popularity: false } }
-    );
+    await Promise.all([
+      VdBrand.updateMany(
+        { popularity: { $exists: false } },
+        { $set: { popularity: false } }
+      ),
+      VdBrand.updateMany(
+        { enabled: { $exists: false } },
+        { $set: { enabled: true } }
+      ),
+    ]);
   } catch (e) {
     // ignore migration issues at boot
   }
@@ -1186,57 +1223,70 @@ router.patch("/admin/brands/update", async (req, res) => {
   try {
     if (!requireAdminKey(req, res)) return;
 
-    const BrandCode = String(req.body?.BrandCode || "").trim();
-    if (!BrandCode)
-      return res
-        .status(400)
-        .json({ success: false, message: "BrandCode required" });
+    const originalBrandCode = String(req.body?.originalBrandCode || req.body?.BrandCode || "").trim();
+    if (!originalBrandCode) {
+      return res.status(400).json({ success: false, message: "BrandCode required" });
+    }
 
     const patch = {};
 
-    // helper: normalize percent input like 9.5, "9.50%", " 9.50 "
     const normalizePct = (v) => {
       if (v === undefined || v === null) return undefined;
-      const s = String(v).trim().replace("%", "");
-      if (s === "") return ""; // allow clearing
+      const s = String(v).trim().replace(/%/g, "");
+      if (s === "") return "";
       const n = Number(s);
-      if (!Number.isFinite(n) || n < 0)
+      if (!Number.isFinite(n) || n < 0) {
         throw new Error("Invalid discount percentage");
-      // store as "9.50"
+      }
       return n.toFixed(2);
     };
 
-    // ✅ NEW: admin discount input
+    const sanitizeString = (v) => String(v ?? "");
+
+    if (req.body.BrandCode !== undefined) {
+      const nextCode = String(req.body.BrandCode || "").trim();
+      if (!nextCode) throw new Error("BrandCode cannot be empty");
+      patch.BrandCode = nextCode;
+    }
+    if (req.body.BrandName !== undefined) patch.BrandName = sanitizeString(req.body.BrandName).trim();
+    if (req.body.Brandtype !== undefined) patch.Brandtype = sanitizeString(req.body.Brandtype).trim();
+    if (req.body.Discount !== undefined) patch.Discount = normalizePct(req.body.Discount);
+
     if (req.body.discountUser !== undefined) {
-      const pct = normalizePct(req.body.discountUser);
-      patch.discountUser = pct;
-
-      // recommended: keep your existing system working by mirroring to customerDiscount
-      // so pricing uses your set discount without extra changes elsewhere
-      patch.customerDiscount = pct;
+      patch.discountUser = normalizePct(req.body.discountUser);
     }
-
-    // backward compatibility: still accept old customerDiscount updates
     if (req.body.customerDiscount !== undefined) {
-      const pct = normalizePct(req.body.customerDiscount);
-      patch.customerDiscount = pct;
-
-      // optional: also mirror into discountUser if discountUser not sent
-      if (req.body.discountUser === undefined) patch.discountUser = pct;
+      patch.customerDiscount = normalizePct(req.body.customerDiscount);
+    }
+    if (req.body.discountUser !== undefined && req.body.customerDiscount === undefined) {
+      patch.customerDiscount = patch.discountUser;
+    }
+    if (req.body.customerDiscount !== undefined && req.body.discountUser === undefined) {
+      patch.discountUser = patch.customerDiscount;
     }
 
-    if (req.body.enabled !== undefined)
-      patch.enabled = Boolean(req.body.enabled);
-    if (req.body.popularity !== undefined)
-      patch.popularity = Boolean(req.body.popularity);
-    if (req.body.notes !== undefined)
-      patch.notes = String(req.body.notes || "");
+    if (req.body.minPrice !== undefined) patch.minPrice = normalizeNullableNumber(req.body.minPrice);
+    if (req.body.maxPrice !== undefined) patch.maxPrice = normalizeNullableNumber(req.body.maxPrice);
+    if (req.body.DenominationList !== undefined) patch.DenominationList = sanitizeString(req.body.DenominationList).trim();
+    if (req.body.Category !== undefined) patch.Category = sanitizeString(req.body.Category).trim();
+    if (req.body.Description !== undefined) patch.Description = sanitizeString(req.body.Description);
+    if (req.body.Images !== undefined) patch.Images = sanitizeString(req.body.Images).trim();
+    if (req.body.TnC !== undefined) patch.TnC = sanitizeString(req.body.TnC);
+    if (req.body.ImportantInstruction !== undefined) patch.ImportantInstruction = parseJsonish(req.body.ImportantInstruction, null);
+    if (req.body.RedeemSteps !== undefined) patch.RedeemSteps = parseJsonish(req.body.RedeemSteps, []);
+    if (req.body.enabled !== undefined) patch.enabled = Boolean(req.body.enabled);
+    if (req.body.popularity !== undefined) patch.popularity = Boolean(req.body.popularity);
+    if (req.body.notes !== undefined) patch.notes = sanitizeString(req.body.notes);
 
     const doc = await VdBrand.findOneAndUpdate(
-      { BrandCode },
+      { BrandCode: originalBrandCode },
       { $set: patch },
       { new: true },
     ).lean();
+
+    if (!doc) {
+      return res.status(404).json({ success: false, message: "Brand not found" });
+    }
 
     res.json({ success: true, item: doc });
   } catch (e) {
@@ -1826,7 +1876,7 @@ router.post("/admin/brand/popularity", async (req, res) => {
 
 
 // ensure legacy brand documents also get popularity=false
-ensurePopularityFieldForExistingBrands();
+ensureBrandAdminFieldsForExistingBrands();
 
 // ✅ start token auto-refresh when routes module is loaded
 startVdTokenAutoRefresh();
