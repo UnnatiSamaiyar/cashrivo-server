@@ -553,10 +553,33 @@ router.post("/sync", async (req, res) => {
 // POST /api/giftcards/order
 // Creates a DB purchase + Razorpay order.
 router.post("/order", auth, async (req, res) => {
+  let purchase = null;
+  let debugStep = "init";
+
+  const errorPayload = (err) => ({
+    success: false,
+    message:
+      err?.message ||
+      err?.error?.description ||
+      err?.response?.data?.description ||
+      "Order creation failed",
+    debug: {
+      step: debugStep,
+      purchaseId: purchase?._id ? String(purchase._id) : "",
+    },
+    providerError: err?.error || err?.response?.data || null,
+  });
+
   try {
     mustNotMockInProd();
+    debugStep = "config-check";
+
     if (!isPaymentTest() && (!key_id || !key_secret)) {
-      return res.status(500).json({ success: false, message: "Razorpay keys missing" });
+      return res.status(500).json({
+        success: false,
+        message: "Razorpay keys missing",
+        debug: { step: debugStep, keyIdPresent: !!key_id, keySecretPresent: !!key_secret },
+      });
     }
 
     const { brandCode, amount, qty } = req.body || {};
@@ -566,6 +589,7 @@ router.post("/order", auth, async (req, res) => {
         .json({ success: false, message: "brandCode, amount, qty required" });
     }
 
+    debugStep = "brand-lookup";
     const brand = await VdBrand.findOne({ BrandCode: brandCode, enabled: { $ne: false } }).lean();
     if (!brand)
       return res
@@ -575,7 +599,6 @@ router.post("/order", auth, async (req, res) => {
     const brandKey = detectBrandKey({ brandName: brand.BrandName, brandCode });
     const pol = policyFor(brandKey);
     const monthKey = monthKeyUtc();
-
 
     const a = Number(amount);
     const q0 = Number(qty);
@@ -590,7 +613,7 @@ router.post("/order", auth, async (req, res) => {
       return res.status(400).json({ success: false, message: `Max quantity per order is ${MAX_GIFTCARD_QTY}` });
     }
 
-    // Enforce denom for fixed brands
+    debugStep = "denomination-check";
     const denoms = parseDenoms(brand.DenominationList);
     if (
       String(brand.Brandtype || "").toLowerCase() === "fixed" &&
@@ -605,66 +628,56 @@ router.post("/order", auth, async (req, res) => {
 
     const total = a * q;
 
-    // discount logic
-// - vendor discount (brand.Discount) comes from VD
-// - customer discount (brand.customerDiscount) is what YOU want to give
-//   if customerDiscount empty -> fallback to vendor discount
-const vendorDisc = Number(String(brand.Discount || "").replace(/[^0-9.]/g, "")) || 0;
-const customerDisc = Number(String(brand.customerDiscount || "").replace(/[^0-9.]/g, "")) || vendorDisc;
-let disc = customerDisc;
+    const vendorDisc = Number(String(brand.Discount || "").replace(/[^0-9.]/g, "")) || 0;
+    const customerDisc = Number(String(brand.customerDiscount || "").replace(/[^0-9.]/g, "")) || vendorDisc;
+    let disc = customerDisc;
 
-// Apply brand policy discount caps
-if (pol.brandKey === "AMAZON") {
-  disc = 0;
-}
-if (pol.brandKey === "FLIPKART") {
-  disc = Math.min(disc, pol.maxDiscountPercent || 0);
-}
+    if (pol.brandKey === "AMAZON") {
+      disc = 0;
+    }
+    if (pol.brandKey === "FLIPKART") {
+      disc = Math.min(disc, pol.maxDiscountPercent || 0);
+    }
 
+    const totalPaise = Math.round(total * 100);
+    let discountPaise = disc > 0 ? Math.round((totalPaise * disc) / 100) : 0;
 
-// work in paise for exactness
-const totalPaise = Math.round(total * 100);
+    debugStep = "monthly-cap-check";
+    if (pol.brandKey !== "NORMAL") {
+      const usage = await readMonthlyUsage({ brandKey: pol.brandKey, monthKey, userId: req.user?.id });
 
-// same rounding as frontend (your UI uses Math.round)
-let discountPaise = disc > 0 ? Math.round((totalPaise * disc) / 100) : 0;
+      const projectedSpend = Number(usage.spendPaise || 0) + Number(totalPaise);
+      if (pol.monthlySpendCapPaise > 0 && projectedSpend > pol.monthlySpendCapPaise) {
+        return res.status(409).json({
+          success: false,
+          code: "MONTHLY_CAP_EXCEEDED",
+          message: "Monthly limit exceeded for this brand",
+          meta: { capPaise: pol.monthlySpendCapPaise, currentPaise: usage.spendPaise || 0, projectedPaise: projectedSpend },
+        });
+      }
 
-// Monthly cap checks (preflight)
-if (pol.brandKey !== "NORMAL") {
-  const usage = await readMonthlyUsage({ brandKey: pol.brandKey, monthKey, userId: req.user?.id });
+      if (pol.monthlyDiscountCapPaise > 0) {
+        const remaining = Math.max(0, pol.monthlyDiscountCapPaise - Number(usage.discountPaise || 0));
+        if (discountPaise > remaining) discountPaise = remaining;
+      } else if (pol.brandKey === "AMAZON") {
+        discountPaise = 0;
+      }
+    }
 
-  const projectedSpend = Number(usage.spendPaise || 0) + Number(totalPaise);
-  if (pol.monthlySpendCapPaise > 0 && projectedSpend > pol.monthlySpendCapPaise) {
-    return res.status(409).json({
-      success: false,
-      code: "MONTHLY_CAP_EXCEEDED",
-      message: "Monthly limit exceeded for this brand",
-      meta: { capPaise: pol.monthlySpendCapPaise, currentPaise: usage.spendPaise || 0, projectedPaise: projectedSpend },
-    });
-  }
+    const payablePaise = Math.max(100, totalPaise - discountPaise);
+    const payable = payablePaise / 100;
 
-  if (pol.monthlyDiscountCapPaise > 0) {
-    const remaining = Math.max(0, pol.monthlyDiscountCapPaise - Number(usage.discountPaise || 0));
-    if (discountPaise > remaining) discountPaise = remaining; // clamp
-  } else if (pol.brandKey === "AMAZON") {
-    discountPaise = 0;
-  }
-}
+    if (!Number.isFinite(payablePaise) || payablePaise <= 0) {
+      return res.status(400).json({ success: false, message: "Invalid payable total" });
+    }
 
-// payable in paise (min ₹1 safeguard)
-const payablePaise = Math.max(100, totalPaise - discountPaise);
-const payable = payablePaise / 100;
-
-if (!Number.isFinite(payablePaise) || payablePaise <= 0) {
-  return res.status(400).json({ success: false, message: "Invalid payable total" });
-}
-
-
+    debugStep = "user-load";
     const userDoc = await User.findById(req.user?.id)
       .select("name email phone address city state pincode")
       .lean();
 
-    // Create pending purchase
-    const purchase = await GiftcardPurchase.create({
+    debugStep = "purchase-create";
+    purchase = await GiftcardPurchase.create({
       user: req.user?.id || null,
       groupId: `GC_${Date.now()}_${Math.random().toString(16).slice(2)}`,
       brandCode,
@@ -691,6 +704,7 @@ if (!Number.isFinite(payablePaise) || payablePaise <= 0) {
     });
 
     if (isPaymentTest()) {
+      debugStep = "test-token-create";
       const token = sha256Hex(`TESTPAY|${purchase._id}|${Date.now()}|${Math.random()}`);
       purchase.testPayment = { token };
       await purchase.save();
@@ -704,21 +718,78 @@ if (!Number.isFinite(payablePaise) || payablePaise <= 0) {
       });
     }
 
-    const order = await razorpay.orders.create({
+    const razorpayOrderPayload = {
       amount: payablePaise,
       currency: "INR",
       receipt: `GC_${purchase._id}`,
+      customer_details: {
+        name: String(userDoc?.name || req.user?.name || "Customer").trim() || "Customer",
+        contact: safeMobile(userDoc?.phone || req.user?.phone || ""),
+      },
       notes: {
         purchaseId: String(purchase._id),
         brandCode,
         qty: String(q),
         amount: String(a),
       },
-    });
+    };
 
+    if (!razorpayOrderPayload.customer_details.contact) {
+      return res.status(400).json({
+        success: false,
+        message: "User phone is required before creating payment order",
+      });
+    }
+
+    debugStep = "razorpay-order-create";
+    let order;
+    try {
+      order = await razorpay.orders.create(razorpayOrderPayload);
+    } catch (err) {
+      console.error("[giftcards/order] razorpay.orders.create failed", {
+        message: err?.message,
+        name: err?.name,
+        stack: err?.stack,
+        error: err?.error,
+        statusCode: err?.statusCode,
+        purchaseId: purchase?._id ? String(purchase._id) : "",
+        payload: {
+          amount: razorpayOrderPayload.amount,
+          currency: razorpayOrderPayload.currency,
+          receipt: razorpayOrderPayload.receipt,
+          notes: razorpayOrderPayload.notes,
+        },
+        keyIdPresent: !!key_id,
+        keySecretPresent: !!key_secret,
+      });
+
+      if (purchase?._id) {
+        try {
+          await GiftcardPurchase.updateOne(
+            { _id: purchase._id },
+            {
+              $set: {
+                "emailDelivery.error": JSON.stringify({
+                  stage: "razorpay-order-create",
+                  message: err?.message || "Razorpay order creation failed",
+                  error: err?.error || null,
+                  statusCode: err?.statusCode || null,
+                  at: new Date().toISOString(),
+                }),
+              },
+            },
+          );
+        } catch (_) {}
+      }
+
+      return res.status(500).json(errorPayload(err));
+    }
+
+    debugStep = "purchase-update-razorpay";
     purchase.razorpay = { order_id: order.id };
     await purchase.save();
 
+    debugStep = "response-send";
     return res.json({
       success: true,
       key_id,
@@ -727,7 +798,36 @@ if (!Number.isFinite(payablePaise) || payablePaise <= 0) {
       policy: { brandKey: pol.brandKey, upiOnly: !!pol.upiOnly },
     });
   } catch (e) {
-    return res.status(500).json({ success: false, message: e.message });
+    console.error("[giftcards/order] failed", {
+      message: e?.message,
+      name: e?.name,
+      stack: e?.stack,
+      error: e?.error,
+      statusCode: e?.statusCode,
+      debugStep,
+      purchaseId: purchase?._id ? String(purchase._id) : "",
+    });
+
+    if (purchase?._id) {
+      try {
+        await GiftcardPurchase.updateOne(
+          { _id: purchase._id },
+          {
+            $set: {
+              "emailDelivery.error": JSON.stringify({
+                stage: debugStep,
+                message: e?.message || "Order creation failed",
+                error: e?.error || null,
+                statusCode: e?.statusCode || null,
+                at: new Date().toISOString(),
+              }),
+            },
+          },
+        );
+      } catch (_) {}
+    }
+
+    return res.status(500).json(errorPayload(e));
   }
 });
 
@@ -885,6 +985,94 @@ router.post("/verify", auth, async (req, res) => {
       }
 
       purchase.policy = { ...(purchase.policy || {}), brandKey: pol.brandKey, monthKey };
+    }
+
+    // ---------------------------
+    // Amazon / Flipkart dummy fulfillment
+    // ---------------------------
+    if (pol.brandKey === "AMAZON" || pol.brandKey === "FLIPKART") {
+      const qty = Math.max(1, Number(purchase.qty || 1));
+      const vouchers = {
+        mode: "POLICY_DUMMY",
+        provider: "Cashrivo",
+        note: `${pol.brandKey} temporary dummy fulfillment`,
+        items: Array.from({ length: qty }).map((_, i) => ({
+          code: `${pol.brandKey}-DUMMY-${String(purchase._id).slice(-6)}-${i + 1}`,
+          pin: String(Math.floor(1000 + Math.random() * 9000)),
+          amount: Number(purchase.amount || 0),
+          currency: "INR",
+          expiry: "2027-12-31",
+          brand: String(purchase.brandName || ""),
+          isDummy: true,
+        })),
+      };
+
+      purchase.vouchers_enc = encryptJson(vouchers);
+      purchase.vouchers_masked = maskVouchers(vouchers);
+      purchase.vdRaw = {
+        dummy: true,
+        provider: "Cashrivo",
+        reason: `${pol.brandKey} direct VD issuance disabled`,
+      };
+      purchase.status = "SUCCESS_TEST";
+
+      if (purchase.policy?.brandKey && purchase.policy.brandKey !== "NORMAL" && !purchase.policy?._usageCounted) {
+        await incMonthlyUsage({
+          brandKey: purchase.policy.brandKey,
+          monthKey: purchase.policy.monthKey || monthKeyUtc(),
+          userId: req.user?.id,
+          spendPaiseInc: purchase.policy.spendPaise || 0,
+          discountPaiseInc: purchase.policy.discountPaise || 0,
+        });
+        purchase.policy._usageCounted = true;
+      }
+
+      await purchase.save();
+
+      try {
+        const to = buyerEmail;
+        const subject = `Your Cashrivo Gift Card - ${purchase.brandName}`;
+        const html = buildGiftCardEmailHtml({
+          brandName: purchase.brandName,
+          totalAmount: purchase.totalAmount,
+          orderId: purchase._id,
+          vouchers,
+        });
+        const info = await sendMail({
+          to,
+          subject,
+          html,
+          text: "Your gift card is ready. Please login to Cashrivo to view.",
+        });
+        purchase.emailDelivery = {
+          sent: true,
+          to,
+          messageId: String(info?.messageId || ""),
+          error: "",
+          sentAt: new Date(),
+        };
+        await purchase.save();
+      } catch (e) {
+        purchase.emailDelivery = {
+          sent: false,
+          to: buyerEmail,
+          messageId: "",
+          error: String(e?.message || e),
+          sentAt: null,
+        };
+        await purchase.save();
+      }
+
+      const rivo = await awardRivoPointsForPurchase({ userId: req.user?.id, purchase });
+
+      return res.json({
+        success: true,
+        purchaseId: String(purchase._id),
+        status: purchase.status,
+        vdFallback: true,
+        dummyGiftcard: true,
+        rivo,
+      });
     }
 
     // ---------------------------
