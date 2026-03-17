@@ -5,14 +5,15 @@ const express = require("express");
 // Models (keep this list small + high-signal; add more later if needed)
 const Blog = require("../models/Blogs");
 const Coupon = require("../models/Coupon");
+const LmdOffer = require("../models/LmdOffers");
 const Banner = require("../models/bannerModel");
 const VdBrand = require("../models/VdBrand");
-let AmazonBanner;
-try {
-  AmazonBanner = require("../models/AmazonBanner");
-} catch (_) {
-  AmazonBanner = null;
-}
+// let AmazonBanner;
+// try {
+//   AmazonBanner = require("../models/AmazonBanner");
+// } catch (_) {
+//   AmazonBanner = null;
+// }
 
 const router = express.Router();
 
@@ -64,8 +65,8 @@ router.get("/search", async (req, res) => {
     const per = {
       blogs: Math.min(6, limit),
       coupons: Math.min(8, limit),
+      lmdOffers: Math.min(10, limit),
       banners: Math.min(4, limit),
-      amazonBanners: Math.min(4, limit),
       giftcards: Math.min(8, limit),
     };
 
@@ -107,7 +108,63 @@ router.get("/search", async (req, res) => {
         )
     );
 
-    // Coupons (Deals)
+    // Exclusive Deals (primary dataset used by /exclusive-deals page)
+    queries.push(
+      LmdOffer.find({
+        $or: [
+          { store: rx },
+          { title: rx },
+          { long_offer: rx },
+          { description: rx },
+          { categories: rx },
+          { code: rx },
+          { offer: rx },
+          { offer_value: rx },
+        ],
+      })
+        .sort({ featured: -1, createdAt: -1, updatedAt: -1 })
+        .limit(per.lmdOffers)
+        .select("_id store title long_offer description categories code offer offer_value type")
+        .lean()
+        .then((rows) =>
+          rows
+            .map((c) => {
+              const title = c.long_offer || c.title || c.store || "Deal";
+              const store = String(c.store || "").trim();
+              const description =
+                c.description ||
+                (store && Array.isArray(c.categories) && c.categories.length
+                  ? `${store} • ${c.categories[0]}`
+                  : store ||
+                    (Array.isArray(c.categories) && c.categories[0]) ||
+                    c.offer ||
+                    c.offer_value ||
+                    "");
+
+              const qLower = q.toLowerCase();
+              const hay = [title, c.title, store, description, c.offer, c.offer_value, c.code]
+                .filter(Boolean)
+                .join(" ")
+                .toLowerCase();
+              let score = 0;
+              if (String(title || "").toLowerCase().startsWith(qLower)) score += 250;
+              if (String(store || "").toLowerCase().startsWith(qLower)) score += 220;
+              if (hay.includes(qLower)) score += 120;
+
+              return makeItem({
+                type: "deal",
+                title,
+                description,
+                route: `/exclusive-deals?deal=${encodeURIComponent(String(c._id))}`,
+                source: "LMD Offers",
+                score,
+              });
+            })
+            .filter(Boolean)
+        )
+    );
+
+    // Legacy coupon search fallback
     queries.push(
       Coupon.find({
         $or: [
@@ -120,7 +177,7 @@ router.get("/search", async (req, res) => {
         ],
       })
         .sort({ verifiedOn: -1, createdAt: -1 })
-        .limit(per.coupons)
+        .limit(Math.min(4, per.coupons))
         .select("couponName storeName category tagline description")
         .lean()
         .then((rows) =>
@@ -133,7 +190,7 @@ router.get("/search", async (req, res) => {
                   c.tagline ||
                   c.description ||
                   (c.storeName && c.category ? `${c.storeName} • ${c.category}` : c.storeName || c.category || ""),
-                route: c._id ? `/deal/${String(c._id)}` : "",
+                route: `/exclusive-deals?search=${encodeURIComponent(String(c.storeName || c.couponName || "").trim())}`,
                 source: "Coupons",
               })
             )
@@ -154,7 +211,7 @@ router.get("/search", async (req, res) => {
           rows
             .map((b) => {
               const link = String(b.link || "");
-              const internal = link.startsWith("/") ? link : "/";
+              const internal = link.startsWith("/") ? link : "";
               return makeItem({
                 type: "banner",
                 title: b.title || b.altText || "Banner",
@@ -246,30 +303,30 @@ router.get("/search", async (req, res) => {
     );
 
     // Amazon Banners (optional model)
-    if (AmazonBanner) {
-      queries.push(
-        AmazonBanner.find({ $or: [{ title: rx }, { description: rx }] })
-          .sort({ createdAt: -1 })
-          .limit(per.amazonBanners)
-          .select("title description link")
-          .lean()
-          .then((rows) =>
-            rows
-              .map((b) => {
-                const link = String(b.link || "");
-                const internal = link.startsWith("/") ? link : "/amazon-deals";
-                return makeItem({
-                  type: "amazon",
-                  title: b.title || "Amazon",
-                  description: b.description || "",
-                  route: internal,
-                  source: "Amazon Banners",
-                });
-              })
-              .filter(Boolean)
-          )
-      );
-    }
+    // if (AmazonBanner) {
+    //   queries.push(
+    //     AmazonBanner.find({ $or: [{ title: rx }, { description: rx }] })
+    //       .sort({ createdAt: -1 })
+    //       .limit(per.amazonBanners)
+    //       .select("title description link")
+    //       .lean()
+    //       .then((rows) =>
+    //         rows
+    //           .map((b) => {
+    //             const link = String(b.link || "");
+    //             const internal = link.startsWith("/") ? link : "/amazon-deals";
+    //             return makeItem({
+    //               type: "amazon",
+    //               title: b.title || "Amazon",
+    //               description: b.description || "",
+    //               route: internal,
+    //               source: "Amazon Banners",
+    //             });
+    //           })
+    //           .filter(Boolean)
+    //       )
+    //   );
+    // }
 
     const groups = await Promise.all(queries);
     const flat = groups.flat().filter(Boolean);
