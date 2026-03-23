@@ -114,18 +114,52 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 app.get("/proxy-logo", async (req, res) => {
   const { url } = req.query;
 
-  if (!url) {
+  if (!url || typeof url !== "string") {
     return res.status(400).send("Missing URL");
   }
 
+  let parsed;
   try {
-    const response = await axios.get(url, { responseType: "arraybuffer" });
-    const contentType = response.headers["content-type"];
+    parsed = new URL(url);
+  } catch {
+    return res.status(400).send("Invalid URL");
+  }
+
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    return res.status(400).send("Unsupported protocol");
+  }
+
+  try {
+    const response = await axios.get(parsed.toString(), {
+      responseType: "stream",
+      timeout: 15000,
+      maxRedirects: 5,
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+        Accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+        Referer: "https://cashrivo.com/",
+      },
+      validateStatus: (status) => status >= 200 && status < 400,
+    });
+
+    const contentType = response.headers["content-type"] || "image/jpeg";
+    const cacheControl =
+      response.headers["cache-control"] || "public, max-age=86400";
+
     res.set("Content-Type", contentType);
-    res.send(response.data);
+    res.set("Cache-Control", cacheControl);
+    res.set("Access-Control-Allow-Origin", "*");
+    res.set("Cross-Origin-Resource-Policy", "cross-origin");
+
+    response.data.pipe(res);
   } catch (error) {
-    console.error("Error proxying image:", error.message);
-    res.status(500).send("Failed to fetch image");
+    console.error(
+      "Error proxying image:",
+      parsed.toString(),
+      error.response?.status || error.message
+    );
+    res.status(502).send("Failed to fetch image");
   }
 });
 
