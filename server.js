@@ -215,6 +215,17 @@ app.use("/api/admin", adminUserRoutes);
 app.use("/api/admin", adminWebsiteRoutes);
 
 /* -----------------------------
+   APP ROUTES
+----------------------------- */
+const cuelinkAppRoutes = require("./routes/app/cuelinksapp");
+const launchpadAppRoutes = require("./routes/app/launchpadapp");
+
+
+
+app.use("/api", cuelinkAppRoutes);
+app.use("/api", launchpadAppRoutes);
+
+/* -----------------------------
    STARTUP TASKS
 ----------------------------- */
 
