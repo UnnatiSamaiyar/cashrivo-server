@@ -11,6 +11,7 @@ const {
   getUsers,
   getUserByUserId,
   updateUser,
+  deleteUser,
   resetPasswordPhone,
   migratePhoneFromEmail,
 } = require("../controller/authController");
@@ -19,6 +20,7 @@ const Otp = require("../models/Otp");
 const User = require("../models/User");
 const bcrypt = require("bcryptjs");
 const passport = require("passport");
+const auth = require("../middleware/auth");
 const GoogleStrategy = require("passport-google-oauth20").Strategy;
 
 // ✅ Use centralized mailer (SMTP/Gmail fallback)
@@ -33,7 +35,8 @@ router.post("/login", login);
 router.post("/forgot", forgot);
 router.get("/users", getUsers);
 router.get("/users/:userId", getUserByUserId);
-router.put("/users/:userId", updateUser);
+router.put("/users/:userId", auth, updateUser);
+router.delete("/users/:userId", auth, deleteUser);
 
 router.post("/send-otp", async (req, res) => {
   try {
