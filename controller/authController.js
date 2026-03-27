@@ -28,6 +28,46 @@ const sendError = (res, status, code, message) => {
 const looksLikeEmail = (v) => typeof v === "string" && v.includes("@");
 const looksLikeE164 = (v) => typeof v === "string" && /^\+\d{8,15}$/.test(v.trim());
 
+const SIGNUP_BONUS_POINTS = 10;
+const REFERRAL_BONUS_FOR_NEW_USER = 20;
+const REFERRAL_REWARD_FOR_REFERRER = 10;
+
+async function creditRivoPoints({ userId, points, sourceType, sourceId, note, amount = null, percent = null }) {
+  const safePoints = Math.max(0, Number(points || 0));
+  if (!userId || !sourceId || safePoints <= 0) return null;
+
+  const existing = await RivoPointTransaction.findOne({ user: userId, sourceType, sourceId }).lean();
+  if (existing) return existing;
+
+  const updatedUser = await User.findByIdAndUpdate(
+    userId,
+    { $inc: { rivoPoints: safePoints } },
+    { new: true, select: "rivoPoints" }
+  );
+
+  const balanceAfter = Number(updatedUser?.rivoPoints || 0);
+
+  try {
+    return await RivoPointTransaction.create({
+      user: userId,
+      direction: "CREDIT",
+      points: safePoints,
+      percent,
+      amount,
+      balanceAfter,
+      sourceType,
+      sourceId,
+      note: String(note || "").trim(),
+    });
+  } catch (e) {
+    if (String(e?.code) === "11000") {
+      return await RivoPointTransaction.findOne({ user: userId, sourceType, sourceId });
+    }
+    await User.findByIdAndUpdate(userId, { $inc: { rivoPoints: -safePoints } });
+    throw e;
+  }
+}
+
 exports.signup = async (req, res) => {
   try {
     const { name, email, phone, password, referCode, phoneVerified } = req.body;
@@ -59,8 +99,10 @@ exports.signup = async (req, res) => {
     }
 
     // ✅ Validate referCode if provided
-    if (referCode) {
-      const referrer = await User.findOne({ userId: referCode });
+    let referrer = null;
+    const normalizedReferCode = typeof referCode === "string" ? referCode.trim().toUpperCase() : "";
+    if (normalizedReferCode) {
+      referrer = await User.findOne({ userId: normalizedReferCode });
       if (!referrer) return sendError(res, 400, "INVALID_REFERRAL", "Invalid referral code");
     }
 
@@ -72,17 +114,41 @@ exports.signup = async (req, res) => {
       name,
       password,
       userId,
-      referCode,
+      referCode: normalizedReferCode || undefined,
       email: normalizedEmail || undefined,
       phone: normalizedPhone || undefined,
       phoneVerified: Boolean(normalizedPhone) ? Boolean(phoneVerified) : false,
       phoneVerifiedAt: Boolean(normalizedPhone) && Boolean(phoneVerified) ? new Date() : null,
+      rivoPoints: 0,
     };
 
     const user = await User.create(createPayload);
 
-    const token = createToken(user);
-    const { password: pwd, ...safeUser } = user._doc;
+    const signupBonusPoints = referrer ? REFERRAL_BONUS_FOR_NEW_USER : SIGNUP_BONUS_POINTS;
+
+    await creditRivoPoints({
+      userId: user._id,
+      points: signupBonusPoints,
+      sourceType: referrer ? "REFERRAL_SIGNUP_BONUS" : "SIGNUP_BONUS",
+      sourceId: user._id,
+      note: referrer
+        ? `Referral signup bonus credited for using ${referrer.userId}`
+        : "Signup bonus credited",
+    });
+
+    if (referrer) {
+      await creditRivoPoints({
+        userId: referrer._id,
+        points: REFERRAL_REWARD_FOR_REFERRER,
+        sourceType: "REFERRAL_REWARD",
+        sourceId: user._id,
+        note: `Referral reward for inviting ${user.userId}`,
+      });
+    }
+
+    const hydratedUser = await User.findById(user._id);
+    const token = createToken(hydratedUser || user);
+    const { password: pwd, ...safeUser } = (hydratedUser || user)._doc;
 
     return res.status(201).json({
       success: true,
