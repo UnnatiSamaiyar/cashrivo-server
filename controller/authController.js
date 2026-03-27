@@ -1,4 +1,10 @@
 const User = require("../models/User");
+const Otp = require("../models/Otp");
+const PhoneOtpSession = require("../models/PhoneOtpSession");
+const RivoPointTransaction = require("../models/RivoPointTransaction");
+const MonthlyBrandUsage = require("../models/MonthlyBrandUsage");
+const UserUpiBinding = require("../models/UserUpiBinding");
+const GiftcardPurchase = require("../models/GiftcardPurchase");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 
@@ -145,23 +151,85 @@ exports.updateUser = async (req, res) => {
   const { userId } = req.params;
 
   try {
-    const updated = await User.findOneAndUpdate({ userId }, req.body, {
-      new: true,
-      runValidators: true,
-    }).select("-password");
+    if (!req.user?.id || req.user?.userId !== userId) {
+      return sendError(res, 403, "FORBIDDEN", "You can update only your own account");
+    }
 
-    if (!updated) {
+    const user = await User.findOne({ userId });
+    if (!user) {
       return sendError(res, 404, "USER_NOT_FOUND", "User not found");
     }
 
+    const { name, phone, address } = req.body || {};
+    const nextName = String(name ?? user.name ?? '').trim();
+    const nextPhoneRaw = String(phone ?? user.phone ?? '').trim();
+    const nextPhone = nextPhoneRaw.replace(/\s+/g, '');
+    const nextAddress = String(address ?? user.address ?? '').trim();
+
+    if (!nextName) {
+      return sendError(res, 400, "VALIDATION_ERROR", "Name is required");
+    }
+
+    if (nextPhone && !/^\+?[0-9\-]{10,16}$/.test(nextPhone)) {
+      return sendError(res, 400, "VALIDATION_ERROR", "Invalid phone number");
+    }
+
+    if (nextPhone) {
+      const existingPhoneUser = await User.findOne({ phone: nextPhone, _id: { $ne: user._id } }).lean();
+      if (existingPhoneUser) {
+        return sendError(res, 409, "PHONE_ALREADY_EXISTS", "Phone number already in use");
+      }
+    }
+
+    user.name = nextName;
+    user.phone = nextPhone || undefined;
+    user.address = nextAddress;
+    await user.save();
+
+    const safeUser = await User.findById(user._id).select("-password");
+
     return res.status(200).json({
       success: true,
-      user: updated,
+      user: safeUser,
       message: "User updated successfully",
     });
   } catch (err) {
     console.error(err);
-    return sendError(res, 500, "SERVER_ERROR", "Server error during update");
+    return sendError(res, 500, "SERVER_ERROR", err.message || "Server error during update");
+  }
+};
+
+exports.deleteUser = async (req, res) => {
+  const { userId } = req.params;
+
+  try {
+    if (!req.user?.id || req.user?.userId !== userId) {
+      return sendError(res, 403, "FORBIDDEN", "You can delete only your own account");
+    }
+
+    const user = await User.findOne({ userId });
+    if (!user) {
+      return sendError(res, 404, "USER_NOT_FOUND", "User not found");
+    }
+
+    await Promise.all([
+      Otp.deleteMany({ email: user.email || null }),
+      PhoneOtpSession.deleteMany({ user: user._id }),
+      RivoPointTransaction.deleteMany({ user: user._id }),
+      MonthlyBrandUsage.deleteMany({ user: user._id }),
+      UserUpiBinding.deleteMany({ user: user._id }),
+      GiftcardPurchase.updateMany({ user: user._id }, { $set: { user: null } }),
+    ]);
+
+    await User.deleteOne({ _id: user._id });
+
+    return res.status(200).json({
+      success: true,
+      message: "Account deleted successfully",
+    });
+  } catch (err) {
+    console.error(err);
+    return sendError(res, 500, "SERVER_ERROR", err.message || "Server error while deleting account");
   }
 };
 
