@@ -28,6 +28,25 @@ const sendError = (res, status, code, message) => {
 const looksLikeEmail = (v) => typeof v === "string" && v.includes("@");
 const looksLikeE164 = (v) => typeof v === "string" && /^\+\d{8,15}$/.test(v.trim());
 
+const normalizePhoneForStorage = (value) => {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+
+  const compact = raw.replace(/[\s\-()]/g, "");
+  if (!compact) return "";
+
+  if (compact.startsWith("+")) {
+    return `+${compact.slice(1).replace(/\D/g, "")}`;
+  }
+
+  return compact.replace(/\D/g, "");
+};
+
+const isValidPhoneForProfile = (value) => {
+  if (!value) return true;
+  return /^\+?[1-9]\d{9,14}$/.test(value);
+};
+
 const SIGNUP_BONUS_POINTS = 10;
 const REFERRAL_BONUS_FOR_NEW_USER = 20;
 const REFERRAL_REWARD_FOR_REFERRER = 10;
@@ -227,21 +246,31 @@ exports.updateUser = async (req, res) => {
     }
 
     const { name, phone, address } = req.body || {};
-    const nextName = String(name ?? user.name ?? '').trim();
-    const nextPhoneRaw = String(phone ?? user.phone ?? '').trim();
-    const nextPhone = nextPhoneRaw.replace(/\s+/g, '');
-    const nextAddress = String(address ?? user.address ?? '').trim();
+    const nextName = String(name ?? user.name ?? "").trim();
+    const nextPhone = normalizePhoneForStorage(phone ?? user.phone ?? "");
+    const nextAddress = String(address ?? user.address ?? "").trim();
+
+    const currentPhone = normalizePhoneForStorage(user.phone || "");
+    const currentLegacyPhoneInEmail = normalizePhoneForStorage(user.email || "");
 
     if (!nextName) {
       return sendError(res, 400, "VALIDATION_ERROR", "Name is required");
     }
 
-    if (nextPhone && !/^\+?[0-9\-]{10,16}$/.test(nextPhone)) {
+    if (nextPhone && !isValidPhoneForProfile(nextPhone)) {
       return sendError(res, 400, "VALIDATION_ERROR", "Invalid phone number");
     }
 
-    if (nextPhone) {
-      const existingPhoneUser = await User.findOne({ phone: nextPhone, _id: { $ne: user._id } }).lean();
+    const isPhoneActuallyChanging = nextPhone !== currentPhone && nextPhone !== currentLegacyPhoneInEmail;
+
+    if (nextPhone && isPhoneActuallyChanging) {
+      const existingPhoneUser = await User.findOne({
+        _id: { $ne: user._id },
+        $or: [{ phone: nextPhone }, { email: nextPhone }],
+      })
+        .select("_id userId phone email")
+        .lean();
+
       if (existingPhoneUser) {
         return sendError(res, 409, "PHONE_ALREADY_EXISTS", "Phone number already in use");
       }
@@ -250,6 +279,11 @@ exports.updateUser = async (req, res) => {
     user.name = nextName;
     user.phone = nextPhone || undefined;
     user.address = nextAddress;
+
+    if (user.email && normalizePhoneForStorage(user.email) === nextPhone) {
+      user.email = undefined;
+    }
+
     await user.save();
 
     const safeUser = await User.findById(user._id).select("-password");
@@ -261,6 +295,17 @@ exports.updateUser = async (req, res) => {
     });
   } catch (err) {
     console.error(err);
+
+    if (String(err?.code) === "11000") {
+      const duplicateField = err?.keyPattern?.phone
+        ? "Phone number already in use"
+        : err?.keyPattern?.email
+          ? "Email already in use"
+          : "Duplicate value already exists";
+
+      return sendError(res, 409, "DUPLICATE_VALUE", duplicateField);
+    }
+
     return sendError(res, 500, "SERVER_ERROR", err.message || "Server error during update");
   }
 };
