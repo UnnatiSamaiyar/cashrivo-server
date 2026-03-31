@@ -39,6 +39,7 @@ const searchRoutes = require("./routes/searchRoutes");
 const launchpadRoutes = require("./routes/launchpadRoutes");
 const rivoPointsRoutes = require("./routes/rivoPoints");
 const seoSettingsRoutes = require("./routes/seoSettingsRoutes");
+const policyRoutes = require("./routes/policyRoutes");
 
 require("./cron/fetchScheduler");
 
@@ -198,6 +199,7 @@ app.use("/api/razorpay", razorpayRoutes);
 app.use("/api", searchRoutes);
 app.use("/api/launchpad", launchpadRoutes);
 app.use("/api", seoSettingsRoutes);
+app.use("/api", policyRoutes);
 
 // Rivo Points
 app.use("/api/rivo", rivoPointsRoutes);
@@ -228,12 +230,6 @@ app.use("/api", launchpadAppRoutes);
 /* -----------------------------
    STARTUP TASKS
 ----------------------------- */
-
-try {
-  startCoupomatedCron();
-} catch (err) {
-  console.error("❌ Failed to start coupomated cron:", err.message);
-}
 
 try {
   getAgodaConnection();
