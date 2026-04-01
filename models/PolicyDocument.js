@@ -8,6 +8,25 @@ const POLICY_TYPES = [
   "faqs",
 ];
 
+const FAQItemSchema = new mongoose.Schema(
+  {
+    question: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    answer: {
+      type: String,
+      default: "",
+    },
+    order: {
+      type: Number,
+      default: 0,
+    },
+  },
+  { _id: false }
+);
+
 const PolicyDocumentSchema = new mongoose.Schema(
   {
     platform: {
@@ -35,6 +54,10 @@ const PolicyDocumentSchema = new mongoose.Schema(
     content: {
       type: String,
       default: "",
+    },
+    faqItems: {
+      type: [FAQItemSchema],
+      default: [],
     },
     isPublished: {
       type: Boolean,

@@ -19,6 +19,50 @@ function isValidDocumentType(documentType) {
   return Boolean(POLICY_META[documentType]);
 }
 
+function normalizeFaqItems(faqItems = []) {
+  if (!Array.isArray(faqItems)) return [];
+
+  return faqItems
+    .map((item, index) => ({
+      question: String(item?.question || "").trim(),
+      answer: String(item?.answer || "").trim(),
+      order: Number.isFinite(Number(item?.order)) ? Number(item.order) : index,
+    }))
+    .filter((item) => item.question || item.answer)
+    .sort((a, b) => a.order - b.order)
+    .map((item, index) => ({ ...item, order: index }));
+}
+
+function escapeHtml(value = "") {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function renderFaqHtml(faqItems = []) {
+  const normalized = normalizeFaqItems(faqItems);
+
+  if (!normalized.length) {
+    return "";
+  }
+
+  const blocks = normalized
+    .map(
+      (item, index) => `
+        <section data-faq-item="true" data-faq-order="${index}" style="border:1px solid #e2e8f0; border-radius:16px; padding:18px 20px; margin:0 0 14px 0; background:#ffffff;">
+          <h3 style="margin:0 0 10px 0; font-size:18px; line-height:1.5; color:#0f172a;">${escapeHtml(item.question)}</h3>
+          <div style="font-size:15px; line-height:1.8; color:#475569; white-space:pre-wrap;">${escapeHtml(item.answer)}</div>
+        </section>
+      `
+    )
+    .join("");
+
+  return `<div data-policy-faqs="true">${blocks}</div>`;
+}
+
 function buildEmptyDocument(platform, documentType) {
   return {
     _id: null,
@@ -27,6 +71,7 @@ function buildEmptyDocument(platform, documentType) {
     title: POLICY_META[documentType]?.title || "",
     summary: "",
     content: "",
+    faqItems: [],
     isPublished: true,
     version: 1,
     publishedAt: null,
@@ -43,6 +88,7 @@ function serializeDocument(doc) {
     title: doc.title,
     summary: doc.summary || "",
     content: doc.content || "",
+    faqItems: normalizeFaqItems(doc.faqItems || []),
     isPublished: Boolean(doc.isPublished),
     version: doc.version || 1,
     publishedAt: doc.publishedAt,
@@ -68,6 +114,30 @@ async function listForPlatform(platform) {
           }
         : buildEmptyDocument(platform, documentType);
     });
+}
+
+function getDocumentPayload(documentType, body = {}) {
+  const basePayload = {
+    title: String(body.title || "").trim(),
+    summary: String(body.summary || "").trim(),
+    isPublished: Boolean(body.isPublished),
+  };
+
+  if (documentType === "faqs") {
+    const faqItems = normalizeFaqItems(body.faqItems || []);
+    const fallbackContent = renderFaqHtml(faqItems);
+    return {
+      ...basePayload,
+      faqItems,
+      content: String(body.content || fallbackContent || ""),
+    };
+  }
+
+  return {
+    ...basePayload,
+    content: String(body.content || ""),
+    faqItems: [],
+  };
 }
 
 router.get("/admin/:platform/policies", async (req, res) => {
@@ -113,7 +183,7 @@ router.get("/admin/:platform/policies/:documentType", async (req, res) => {
 router.post("/admin/:platform/policies", async (req, res) => {
   try {
     const { platform } = req.params;
-    const { documentType, title, summary = "", content = "", isPublished = true } = req.body || {};
+    const { documentType } = req.body || {};
 
     if (!isValidPlatform(platform)) {
       return res.status(400).json({ message: "Invalid platform" });
@@ -121,7 +191,10 @@ router.post("/admin/:platform/policies", async (req, res) => {
     if (!isValidDocumentType(documentType)) {
       return res.status(400).json({ message: "Invalid policy type" });
     }
-    if (!String(title || "").trim()) {
+
+    const payload = getDocumentPayload(documentType, req.body || {});
+
+    if (!payload.title) {
       return res.status(400).json({ message: "Title is required" });
     }
 
@@ -133,10 +206,7 @@ router.post("/admin/:platform/policies", async (req, res) => {
     const doc = await PolicyDocument.create({
       platform,
       documentType,
-      title: String(title).trim(),
-      summary: String(summary || "").trim(),
-      content: String(content || ""),
-      isPublished: Boolean(isPublished),
+      ...payload,
       publishedAt: new Date(),
       lastEditedAt: new Date(),
       version: 1,
@@ -152,7 +222,6 @@ router.post("/admin/:platform/policies", async (req, res) => {
 router.put("/admin/:platform/policies/:documentType", async (req, res) => {
   try {
     const { platform, documentType } = req.params;
-    const { title, summary = "", content = "", isPublished = true } = req.body || {};
 
     if (!isValidPlatform(platform)) {
       return res.status(400).json({ message: "Invalid platform" });
@@ -160,7 +229,10 @@ router.put("/admin/:platform/policies/:documentType", async (req, res) => {
     if (!isValidDocumentType(documentType)) {
       return res.status(400).json({ message: "Invalid policy type" });
     }
-    if (!String(title || "").trim()) {
+
+    const payload = getDocumentPayload(documentType, req.body || {});
+
+    if (!payload.title) {
       return res.status(400).json({ message: "Title is required" });
     }
 
@@ -169,10 +241,8 @@ router.put("/admin/:platform/policies/:documentType", async (req, res) => {
       const created = await PolicyDocument.create({
         platform,
         documentType,
-        title: String(title).trim(),
-        summary: String(summary || "").trim(),
-        content: String(content || ""),
-        isPublished: Boolean(isPublished),
+        ...payload,
+        content: documentType === "faqs" ? (payload.content || renderFaqHtml(payload.faqItems)) : payload.content,
         publishedAt: new Date(),
         lastEditedAt: new Date(),
         version: 1,
@@ -184,10 +254,11 @@ router.put("/admin/:platform/policies/:documentType", async (req, res) => {
       });
     }
 
-    existing.title = String(title).trim();
-    existing.summary = String(summary || "").trim();
-    existing.content = String(content || "");
-    existing.isPublished = Boolean(isPublished);
+    existing.title = payload.title;
+    existing.summary = payload.summary;
+    existing.content = documentType === "faqs" ? (payload.content || renderFaqHtml(payload.faqItems)) : payload.content;
+    existing.faqItems = payload.faqItems;
+    existing.isPublished = payload.isPublished;
     existing.lastEditedAt = new Date();
     if (existing.isPublished) {
       existing.publishedAt = existing.publishedAt || new Date();
