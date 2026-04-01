@@ -55,6 +55,12 @@ const PolicyDocumentSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
+    websiteUrl: {
+      type: String,
+      default: "",
+      trim: true,
+      maxlength: 1000,
+    },
     faqItems: {
       type: [FAQItemSchema],
       default: [],
