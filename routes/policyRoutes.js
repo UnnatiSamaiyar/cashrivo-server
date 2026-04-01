@@ -259,6 +259,7 @@ router.put("/admin/:platform/policies/:documentType", async (req, res) => {
 
     existing.title = payload.title;
     existing.summary = payload.summary;
+    existing.websiteUrl = payload.websiteUrl;
     existing.content = documentType === "faqs" ? (payload.content || renderFaqHtml(payload.faqItems)) : payload.content;
     existing.faqItems = payload.faqItems;
     existing.isPublished = payload.isPublished;
