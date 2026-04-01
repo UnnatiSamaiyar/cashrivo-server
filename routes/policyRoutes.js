@@ -71,6 +71,7 @@ function buildEmptyDocument(platform, documentType) {
     title: POLICY_META[documentType]?.title || "",
     summary: "",
     content: "",
+    websiteUrl: "",
     faqItems: [],
     isPublished: true,
     version: 1,
@@ -88,6 +89,7 @@ function serializeDocument(doc) {
     title: doc.title,
     summary: doc.summary || "",
     content: doc.content || "",
+    websiteUrl: doc.websiteUrl || "",
     faqItems: normalizeFaqItems(doc.faqItems || []),
     isPublished: Boolean(doc.isPublished),
     version: doc.version || 1,
@@ -120,6 +122,7 @@ function getDocumentPayload(documentType, body = {}) {
   const basePayload = {
     title: String(body.title || "").trim(),
     summary: String(body.summary || "").trim(),
+    websiteUrl: String(body.websiteUrl || "").trim(),
     isPublished: Boolean(body.isPublished),
   };
 
