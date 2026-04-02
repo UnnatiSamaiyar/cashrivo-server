@@ -39,6 +39,7 @@ const sanitizeLine = (value, fallback = "") => String(value ?? fallback).trim();
 const ensureSettingsDocument = async () => {
   const existing = await ReferralContentSettings.findOne({ key: DEFAULT_KEY });
   if (existing) return existing;
+
   return ReferralContentSettings.create(DEFAULT_SETTINGS);
 };
 
@@ -71,13 +72,12 @@ const buildReferralContentPayload = (settings) => ({
 exports.getReferralContent = async (req, res) => {
   try {
     const settings = await ensureSettingsDocument();
-    const referralContent = buildReferralContentPayload(settings);
 
     return res.status(200).json({
       success: true,
-      referralContent,
-      data: referralContent,
-      settings: referralContent,
+      referralContent: buildReferralContentPayload(settings),
+      data: buildReferralContentPayload(settings),
+      settings: buildReferralContentPayload(settings),
       message: "Referral content fetched successfully",
     });
   } catch (err) {
@@ -134,16 +134,14 @@ exports.upsertReferralContent = async (req, res) => {
       return sendError(res, 400, "VALIDATION_ERROR", "Invalid App Store URL");
     }
 
-    const update = {
-      updatedByUserId: sanitizeLine(req.user?.userId || req.user?.id || "admin") || "admin",
-    };
+    const update = {};
 
     if (shareSubject !== undefined) {
-      const trimmedSubject = sanitizeLine(shareSubject, DEFAULT_SETTINGS.shareSubject);
-      if (!trimmedSubject) {
+      const nextSubject = sanitizeLine(shareSubject, DEFAULT_SETTINGS.shareSubject);
+      if (!nextSubject) {
         return sendError(res, 400, "VALIDATION_ERROR", "Share subject is required");
       }
-      update.shareSubject = trimmedSubject;
+      update.shareSubject = nextSubject;
     }
 
     if (shareMessageTemplate !== undefined) {
@@ -168,17 +166,21 @@ exports.upsertReferralContent = async (req, res) => {
 
     const settings = await ReferralContentSettings.findOneAndUpdate(
       { key: DEFAULT_KEY },
-      { $set: update, $setOnInsert: DEFAULT_SETTINGS },
+      {
+        $set: update,
+        $setOnInsert: {
+          key: DEFAULT_KEY,
+          updatedByUserId: null,
+        },
+      },
       { new: true, upsert: true }
     );
 
-    const referralContent = buildReferralContentPayload(settings);
-
     return res.status(200).json({
       success: true,
-      referralContent,
-      data: referralContent,
-      settings: referralContent,
+      referralContent: buildReferralContentPayload(settings),
+      data: buildReferralContentPayload(settings),
+      settings: buildReferralContentPayload(settings),
       message: "Referral content updated successfully",
     });
   } catch (err) {
