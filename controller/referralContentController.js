@@ -23,12 +23,6 @@ const sendError = (res, status, code, message) => {
   });
 };
 
-const parseAdminList = (value) =>
-  String(value || "")
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
-
 const isValidOptionalUrl = (value) => {
   const raw = String(value || "").trim();
   if (!raw) return true;
@@ -45,7 +39,6 @@ const sanitizeLine = (value, fallback = "") => String(value ?? fallback).trim();
 const ensureSettingsDocument = async () => {
   const existing = await ReferralContentSettings.findOne({ key: DEFAULT_KEY });
   if (existing) return existing;
-
   return ReferralContentSettings.create(DEFAULT_SETTINGS);
 };
 
@@ -64,44 +57,27 @@ const resolveTemplate = ({ template, referralCode, playStoreUrl, appStoreUrl }) 
     .trim();
 };
 
-const hasAdminAccess = (req) => {
-  const user = req.user || {};
-
-  const adminSecretHeader = String(req.headers["x-admin-secret"] || "").trim();
-  const adminSecretEnv = String(process.env.ADMIN_PANEL_SECRET || "").trim();
-  if (adminSecretHeader && adminSecretEnv && adminSecretHeader === adminSecretEnv) {
-    return true;
-  }
-
-  const allowedUserIds = parseAdminList(process.env.ADMIN_USER_IDS);
-  const allowedMongoIds = parseAdminList(process.env.ADMIN_MONGO_IDS);
-  const allowedEmails = parseAdminList(process.env.ADMIN_EMAILS).map((item) => item.toLowerCase());
-  const allowedPhones = parseAdminList(process.env.ADMIN_PHONES);
-
-  if (user.userId && allowedUserIds.includes(String(user.userId).trim())) return true;
-  if (user.id && allowedMongoIds.includes(String(user.id).trim())) return true;
-  if (user.email && allowedEmails.includes(String(user.email).trim().toLowerCase())) return true;
-  if (user.phone && allowedPhones.includes(String(user.phone).trim())) return true;
-
-  return false;
-};
+const buildReferralContentPayload = (settings) => ({
+  shareSubject: settings.shareSubject,
+  shareMessageTemplate: settings.shareMessageTemplate,
+  playStoreUrl: settings.playStoreUrl,
+  appStoreUrl: settings.appStoreUrl,
+  isActive: settings.isActive,
+  placeholders: ["{{referralCode}}", "{{playStoreUrl}}", "{{appStoreUrl}}"],
+  updatedByUserId: settings.updatedByUserId,
+  updatedAt: settings.updatedAt,
+});
 
 exports.getReferralContent = async (req, res) => {
   try {
     const settings = await ensureSettingsDocument();
+    const referralContent = buildReferralContentPayload(settings);
 
     return res.status(200).json({
       success: true,
-      referralContent: {
-        shareSubject: settings.shareSubject,
-        shareMessageTemplate: settings.shareMessageTemplate,
-        playStoreUrl: settings.playStoreUrl,
-        appStoreUrl: settings.appStoreUrl,
-        isActive: settings.isActive,
-        placeholders: ["{{referralCode}}", "{{playStoreUrl}}", "{{appStoreUrl}}"],
-        updatedByUserId: settings.updatedByUserId,
-        updatedAt: settings.updatedAt,
-      },
+      referralContent,
+      data: referralContent,
+      settings: referralContent,
       message: "Referral content fetched successfully",
     });
   } catch (err) {
@@ -142,19 +118,6 @@ exports.getReferralContentPreview = async (req, res) => {
 
 exports.upsertReferralContent = async (req, res) => {
   try {
-    if (!req.user?.id) {
-      return sendError(res, 401, "UNAUTHORIZED", "Authentication required");
-    }
-
-    if (!hasAdminAccess(req)) {
-      return sendError(
-        res,
-        403,
-        "FORBIDDEN",
-        "Admin access required. Configure ADMIN_USER_IDS / ADMIN_EMAILS / ADMIN_MONGO_IDS / ADMIN_PHONES or ADMIN_PANEL_SECRET."
-      );
-    }
-
     const {
       shareSubject,
       shareMessageTemplate,
@@ -172,11 +135,15 @@ exports.upsertReferralContent = async (req, res) => {
     }
 
     const update = {
-      updatedByUserId: String(req.user.userId || req.user.id || "").trim() || null,
+      updatedByUserId: sanitizeLine(req.user?.userId || req.user?.id || "admin") || "admin",
     };
 
     if (shareSubject !== undefined) {
-      update.shareSubject = sanitizeLine(shareSubject, DEFAULT_SETTINGS.shareSubject);
+      const trimmedSubject = sanitizeLine(shareSubject, DEFAULT_SETTINGS.shareSubject);
+      if (!trimmedSubject) {
+        return sendError(res, 400, "VALIDATION_ERROR", "Share subject is required");
+      }
+      update.shareSubject = trimmedSubject;
     }
 
     if (shareMessageTemplate !== undefined) {
@@ -205,18 +172,13 @@ exports.upsertReferralContent = async (req, res) => {
       { new: true, upsert: true }
     );
 
+    const referralContent = buildReferralContentPayload(settings);
+
     return res.status(200).json({
       success: true,
-      referralContent: {
-        shareSubject: settings.shareSubject,
-        shareMessageTemplate: settings.shareMessageTemplate,
-        playStoreUrl: settings.playStoreUrl,
-        appStoreUrl: settings.appStoreUrl,
-        isActive: settings.isActive,
-        placeholders: ["{{referralCode}}", "{{playStoreUrl}}", "{{appStoreUrl}}"],
-        updatedByUserId: settings.updatedByUserId,
-        updatedAt: settings.updatedAt,
-      },
+      referralContent,
+      data: referralContent,
+      settings: referralContent,
       message: "Referral content updated successfully",
     });
   } catch (err) {
