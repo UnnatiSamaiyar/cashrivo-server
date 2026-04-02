@@ -23,6 +23,12 @@ const passport = require("passport");
 const auth = require("../middleware/auth");
 const GoogleStrategy = require("passport-google-oauth20").Strategy;
 
+const {
+  getReferralContent,
+  getReferralContentPreview,
+  upsertReferralContent,
+} = require("../controller/referralContentController");
+
 // ✅ Use centralized mailer (SMTP/Gmail fallback)
 const { sendMail } = require("../services/mailer");
 
@@ -37,6 +43,12 @@ router.get("/users", getUsers);
 router.get("/users/:userId", getUserByUserId);
 router.put("/users/:userId", auth, updateUser);
 router.delete("/users/:userId", auth, deleteUser);
+
+
+router.get("/referral-content", getReferralContent);
+router.get("/referral-content/preview", auth, getReferralContentPreview);
+router.put("/admin/referral-content", auth, upsertReferralContent);
+
 
 router.post("/send-otp", async (req, res) => {
   try {
