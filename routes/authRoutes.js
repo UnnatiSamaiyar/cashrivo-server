@@ -44,11 +44,11 @@ router.get("/users/:userId", getUserByUserId);
 router.put("/users/:userId", auth, updateUser);
 router.delete("/users/:userId", auth, deleteUser);
 
-
+// Referral content routes
 router.get("/referral-content", getReferralContent);
-router.get("/referral-content/preview", auth, getReferralContentPreview);
-router.put("/admin/referral-content", auth, upsertReferralContent);
-
+router.get("/admin/referral-content", getReferralContent);
+router.get("/referral-content/preview", getReferralContentPreview);
+router.put("/admin/referral-content", upsertReferralContent);
 
 router.post("/send-otp", async (req, res) => {
   try {
@@ -156,7 +156,6 @@ router.post("/reset-password", async (req, res) => {
     return res.status(500).json({ message: "Server error." });
   }
 });
-
 
 // ✅ NEW: Phone password reset (only if phoneVerified=true)
 router.post("/reset-password-phone", resetPasswordPhone);
