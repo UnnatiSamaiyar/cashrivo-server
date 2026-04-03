@@ -34,14 +34,12 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
 });
 
-// helper: delete file safely
 function safeUnlink(absPath) {
   try {
     if (absPath && fs.existsSync(absPath)) fs.unlinkSync(absPath);
   } catch (_) {}
 }
 
-// helper: normalize exclusive input
 function parseExclusive(v) {
   if (v === undefined || v === null || v === "") return false;
   if (typeof v === "boolean") return v;
@@ -49,13 +47,18 @@ function parseExclusive(v) {
   return s === "true" || s === "1" || s === "yes" || s === "on";
 }
 
-// CREATE (image mandatory)
+function parsePlatform(v) {
+  const s = String(v || "").trim().toLowerCase();
+  return s === "app" ? "app" : "website";
+}
+
 router.post("/", upload.single("image"), async (req, res) => {
   try {
     const name = String(req.body?.name || "").trim();
     const link = String(req.body?.link || "").trim();
     const couponCode = String(req.body?.couponCode || "").trim();
     const exclusive = parseExclusive(req.body?.exclusive);
+    const platform = parsePlatform(req.body?.platform);
 
     if (!name) return res.status(400).json({ success: false, message: "name is required" });
     if (!link) return res.status(400).json({ success: false, message: "link is required" });
@@ -68,6 +71,7 @@ router.post("/", upload.single("image"), async (req, res) => {
       link,
       couponCode,
       exclusive,
+      platform,
       image: {
         filename: req.file.filename,
         originalname: req.file.originalname,
@@ -79,23 +83,22 @@ router.post("/", upload.single("image"), async (req, res) => {
 
     return res.json({ success: true, data: item });
   } catch (err) {
-    // if something fails after upload, cleanup
     if (req.file?.filename) safeUnlink(path.join(UPLOAD_DIR, req.file.filename));
     return res.status(500).json({ success: false, message: err.message || "Server error" });
   }
 });
 
-// READ ALL
 router.get("/", async (req, res) => {
   try {
-    const items = await LaunchpadItem.find().sort({ createdAt: -1 });
+    const platform = req.query?.platform ? parsePlatform(req.query.platform) : null;
+    const filter = platform ? { platform } : {};
+    const items = await LaunchpadItem.find(filter).sort({ createdAt: -1 });
     return res.json({ success: true, data: items });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message || "Server error" });
   }
 });
 
-// READ ONE
 router.get("/:id", async (req, res) => {
   try {
     const item = await LaunchpadItem.findById(req.params.id);
@@ -106,7 +109,6 @@ router.get("/:id", async (req, res) => {
   }
 });
 
-// UPDATE (image optional here; keep old if not provided)
 router.put("/:id", upload.single("image"), async (req, res) => {
   try {
     const item = await LaunchpadItem.findById(req.params.id);
@@ -121,6 +123,8 @@ router.put("/:id", upload.single("image"), async (req, res) => {
       req.body?.couponCode !== undefined ? String(req.body.couponCode).trim() : item.couponCode;
     const exclusive =
       req.body?.exclusive !== undefined ? parseExclusive(req.body.exclusive) : item.exclusive;
+    const platform =
+      req.body?.platform !== undefined ? parsePlatform(req.body.platform) : (item.platform || "website");
 
     if (!name) {
       if (req.file?.filename) safeUnlink(path.join(UPLOAD_DIR, req.file.filename));
@@ -131,7 +135,6 @@ router.put("/:id", upload.single("image"), async (req, res) => {
       return res.status(400).json({ success: false, message: "link is required" });
     }
 
-    // if new image uploaded, delete old and replace
     if (req.file) {
       const oldAbs = path.join(UPLOAD_DIR, item.image?.filename || "");
       safeUnlink(oldAbs);
@@ -149,6 +152,7 @@ router.put("/:id", upload.single("image"), async (req, res) => {
     item.link = link;
     item.couponCode = couponCode;
     item.exclusive = exclusive;
+    item.platform = platform;
 
     await item.save();
     return res.json({ success: true, data: item });
@@ -158,13 +162,11 @@ router.put("/:id", upload.single("image"), async (req, res) => {
   }
 });
 
-// DELETE
 router.delete("/:id", async (req, res) => {
   try {
     const item = await LaunchpadItem.findById(req.params.id);
     if (!item) return res.status(404).json({ success: false, message: "Not found" });
 
-    // delete image file
     const abs = path.join(UPLOAD_DIR, item.image?.filename || "");
     safeUnlink(abs);
 

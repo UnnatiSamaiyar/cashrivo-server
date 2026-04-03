@@ -6,6 +6,13 @@ const LaunchpadItemSchema = new mongoose.Schema(
     link: { type: String, required: true, trim: true },
     couponCode: { type: String, default: "", trim: true }, // optional
     exclusive: { type: Boolean, required: true, default: false }, // mandatory boolean (default false)
+    platform: {
+      type: String,
+      enum: ["website", "app"],
+      default: "website",
+      index: true,
+      trim: true,
+    },
 
     // image mandatory
     image: {
