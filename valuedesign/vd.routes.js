@@ -181,6 +181,67 @@ function decryptIfPresent(encryptedStr) {
   }
 }
 
+
+function parseBrandDenominations(list) {
+  if (!list) return [];
+  return String(list)
+    .split(",")
+    .map((x) => Number(String(x).trim()))
+    .filter((n) => Number.isFinite(n) && n > 0)
+    .sort((a, b) => a - b);
+}
+
+function buildVdBrandSyncUpdate(brand = {}) {
+  const BrandCode = brand?.BrandCode || brand?.brandCode || "";
+  const denoms = brand?.DenominationList ? String(brand.DenominationList) : "";
+  const denArr = parseBrandDenominations(denoms);
+
+  const selectedFieldSet = {
+    Brandtype: brand?.Brandtype || "",
+    Discount: brand?.Discount || "",
+    notes: brand?.notes || "",
+    minPrice: denArr.length ? denArr[0] : null,
+    maxPrice: denArr.length ? denArr[denArr.length - 1] : null,
+    DenominationList: denoms,
+    Category: brand?.Category || "",
+    Description: brand?.Description || "",
+    TnC: brand?.TnC || "",
+    ImportantInstruction: brand?.ImportantInstruction || null,
+    RedeemSteps: Array.isArray(brand?.RedeemSteps) ? brand.RedeemSteps : [],
+    raw: brand || {},
+  };
+
+  const fullInsertSet = {
+    BrandCode,
+    BrandName: brand?.BrandName || "",
+    Brandtype: selectedFieldSet.Brandtype,
+    Discount: selectedFieldSet.Discount,
+    minPrice: selectedFieldSet.minPrice,
+    maxPrice: selectedFieldSet.maxPrice,
+    DenominationList: selectedFieldSet.DenominationList,
+    Category: selectedFieldSet.Category,
+    Description: selectedFieldSet.Description,
+    Images: brand?.Images || "",
+    TnC: selectedFieldSet.TnC,
+    ImportantInstruction: selectedFieldSet.ImportantInstruction,
+    RedeemSteps: selectedFieldSet.RedeemSteps,
+    raw: selectedFieldSet.raw,
+  };
+
+  return {
+    filter: { BrandCode },
+    update: {
+      $set: selectedFieldSet,
+      $setOnInsert: {
+        ...fullInsertSet,
+        enabled: true,
+        popularity: false,
+      },
+    },
+  };
+}
+
+
 /**
  * 1) Generate Token
  * POST /api/vd/token
@@ -243,51 +304,25 @@ router.post("/brands", async (req, res) => {
 
     // decryptedJson for brands is usually an array of brand objects
     if (Array.isArray(decryptedJson)) {
-      const ops = decryptedJson.map((b) => {
-        const code = b?.BrandCode || BrandCode || "";
-        return {
-          updateOne: {
-            filter: { BrandCode: code },
-            update: {
-              $set: {
-                BrandCode: code,
-                BrandName: b?.BrandName || "",
-                Brandtype: b?.Brandtype || "",
-                Discount: b?.Discount || "",
-                minPrice:
-                  typeof b?.minPrice === "number"
-                    ? b.minPrice
-                    : b?.minPrice
-                      ? Number(b.minPrice)
-                      : null,
-                maxPrice:
-                  typeof b?.maxPrice === "number"
-                    ? b.maxPrice
-                    : b?.maxPrice
-                      ? Number(b.maxPrice)
-                      : null,
-                DenominationList: b?.DenominationList || "",
-                Category: b?.Category || "",
-                Description: b?.Description || "",
-                Images: b?.Images || "",
-                TnC: b?.TnC || "",
-                ImportantInstruction: b?.ImportantInstruction || null,
-                RedeemSteps: Array.isArray(b?.RedeemSteps) ? b.RedeemSteps : [],
-                raw: b || {},
-              },
-              $setOnInsert: {
-                enabled: true,
-                popularity: false,
-              },
-              $setOnInsert: {
-                enabled: true,
-                popularity: false,
-              },
+      const ops = decryptedJson
+        .map((b) => {
+          const code = b?.BrandCode || BrandCode || "";
+          if (!code) return null;
+
+          const { filter, update } = buildVdBrandSyncUpdate({
+            ...b,
+            BrandCode: code,
+          });
+
+          return {
+            updateOne: {
+              filter,
+              update,
+              upsert: true,
             },
-            upsert: true,
-          },
-        };
-      });
+          };
+        })
+        .filter(Boolean);
 
       if (ops.length) await VdBrand.bulkWrite(ops, { ordered: false });
     }
@@ -1068,43 +1103,25 @@ async function jobSyncBrandsNow() {
       : { text: "", json: null };
 
     if (Array.isArray(decryptedJson)) {
-      const ops = decryptedJson.map((b) => {
-        const code = b?.BrandCode || "";
-        return {
-          updateOne: {
-            filter: { BrandCode: code },
-            update: {
-              $set: {
-                BrandCode: code,
-                BrandName: b?.BrandName || "",
-                Brandtype: b?.Brandtype || "",
-                Discount: b?.Discount || "",
-                minPrice:
-                  typeof b?.minPrice === "number"
-                    ? b.minPrice
-                    : b?.minPrice
-                      ? Number(b.minPrice)
-                      : null,
-                maxPrice:
-                  typeof b?.maxPrice === "number"
-                    ? b.maxPrice
-                    : b?.maxPrice
-                      ? Number(b.maxPrice)
-                      : null,
-                DenominationList: b?.DenominationList || "",
-                Category: b?.Category || "",
-                Description: b?.Description || "",
-                Images: b?.Images || "",
-                TnC: b?.TnC || "",
-                ImportantInstruction: b?.ImportantInstruction || null,
-                RedeemSteps: Array.isArray(b?.RedeemSteps) ? b.RedeemSteps : [],
-                raw: b || {},
-              },
+      const ops = decryptedJson
+        .map((b) => {
+          const code = b?.BrandCode || "";
+          if (!code) return null;
+
+          const { filter, update } = buildVdBrandSyncUpdate({
+            ...b,
+            BrandCode: code,
+          });
+
+          return {
+            updateOne: {
+              filter,
+              update,
+              upsert: true,
             },
-            upsert: true,
-          },
-        };
-      });
+          };
+        })
+        .filter(Boolean);
 
       if (ops.length) await VdBrand.bulkWrite(ops, { ordered: false });
     }
