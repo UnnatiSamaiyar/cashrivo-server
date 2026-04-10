@@ -72,6 +72,57 @@ function parseDenoms(list) {
     .sort((a, b) => a - b);
 }
 
+function buildGiftcardBrandSyncUpdate(brand = {}) {
+  const BrandCode = brand?.BrandCode || brand?.brandCode || "";
+  const denoms = brand?.DenominationList ? String(brand.DenominationList) : "";
+  const denArr = parseDenoms(denoms);
+
+  const selectedFieldSet = {
+    Brandtype: brand?.Brandtype || "",
+    Discount: String(brand?.Discount || ""),
+    notes: brand?.notes || "",
+    minPrice: denArr.length ? denArr[0] : null,
+    maxPrice: denArr.length ? denArr[denArr.length - 1] : null,
+    DenominationList: denoms,
+    Category: brand?.Category || "",
+    Description: brand?.Description || "",
+    TnC: brand?.TnC || "",
+    ImportantInstruction: brand?.ImportantInstruction || null,
+    RedeemSteps: Array.isArray(brand?.RedeemSteps) ? brand.RedeemSteps : [],
+    raw: brand || {},
+  };
+
+  const fullInsertSet = {
+    BrandCode,
+    BrandName: brand?.BrandName || "",
+    Brandtype: selectedFieldSet.Brandtype,
+    Category: selectedFieldSet.Category,
+    DenominationList: selectedFieldSet.DenominationList,
+    Discount: selectedFieldSet.Discount,
+    Description: selectedFieldSet.Description,
+    Images: brand?.Images || "",
+    TnC: selectedFieldSet.TnC,
+    ImportantInstruction: selectedFieldSet.ImportantInstruction,
+    RedeemSteps: selectedFieldSet.RedeemSteps,
+    minPrice: selectedFieldSet.minPrice,
+    maxPrice: selectedFieldSet.maxPrice,
+    raw: selectedFieldSet.raw,
+  };
+
+  return {
+    filter: { BrandCode },
+    update: {
+      $set: selectedFieldSet,
+      $setOnInsert: {
+        ...fullInsertSet,
+        enabled: true,
+        popularity: false,
+      },
+    },
+  };
+}
+
+
 function verifyRazorpaySignature({ order_id, payment_id, signature }) {
   const body = `${order_id}|${payment_id}`;
   const expected = crypto
@@ -486,33 +537,12 @@ router.post("/sync", async (req, res) => {
         const BrandCode = b?.BrandCode || b?.brandCode;
         if (!BrandCode) continue;
 
-        const denoms = b?.DenominationList ? String(b.DenominationList) : "";
-        const denArr = parseDenoms(denoms);
-        const minPrice = denArr.length ? denArr[0] : null;
-        const maxPrice = denArr.length ? denArr[denArr.length - 1] : null;
+        const { filter, update } = buildGiftcardBrandSyncUpdate({
+          ...b,
+          BrandCode,
+        });
 
-        await VdBrand.findOneAndUpdate(
-          { BrandCode },
-          {
-            $set: {
-              BrandCode,
-              BrandName: b?.BrandName || "",
-              Brandtype: b?.Brandtype || "",
-              Category: b?.Category || "",
-              DenominationList: denoms,
-              Discount: String(b?.Discount || ""),
-              Description: b?.Description || "",
-              Images: b?.Images || "",
-              TnC: b?.TnC || "",
-              ImportantInstruction: b?.ImportantInstruction || null,
-              RedeemSteps: Array.isArray(b?.RedeemSteps) ? b.RedeemSteps : [],
-              minPrice,
-              maxPrice,
-              raw: b || {},
-            },
-          },
-          { upsert: true },
-        );
+        await VdBrand.findOneAndUpdate(filter, update, { upsert: true });
         brandsUpserted++;
       }
     }
