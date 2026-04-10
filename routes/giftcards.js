@@ -72,56 +72,53 @@ function parseDenoms(list) {
     .sort((a, b) => a - b);
 }
 
-function buildGiftcardBrandSyncUpdate(brand = {}) {
-  const BrandCode = brand?.BrandCode || brand?.brandCode || "";
-  const denoms = brand?.DenominationList ? String(brand.DenominationList) : "";
+
+function buildSelectiveBrandSyncUpdate(brandPayload = {}) {
+  const BrandCode = brandPayload?.BrandCode || brandPayload?.brandCode || "";
+  const denoms = brandPayload?.DenominationList ? String(brandPayload.DenominationList) : "";
   const denArr = parseDenoms(denoms);
+  const minPrice = denArr.length ? denArr[0] : null;
+  const maxPrice = denArr.length ? denArr[denArr.length - 1] : null;
 
-  const selectedFieldSet = {
-    Brandtype: brand?.Brandtype || "",
-    Discount: String(brand?.Discount || ""),
-    notes: brand?.notes || "",
-    minPrice: denArr.length ? denArr[0] : null,
-    maxPrice: denArr.length ? denArr[denArr.length - 1] : null,
+  const selectiveExistingFields = {
+    Brandtype: brandPayload?.Brandtype || "",
+    Discount: String(brandPayload?.Discount || ""),
+    notes: typeof brandPayload?.notes === "string" ? brandPayload.notes : "",
+    minPrice,
+    maxPrice,
     DenominationList: denoms,
-    Category: brand?.Category || "",
-    Description: brand?.Description || "",
-    TnC: brand?.TnC || "",
-    ImportantInstruction: brand?.ImportantInstruction || null,
-    RedeemSteps: Array.isArray(brand?.RedeemSteps) ? brand.RedeemSteps : [],
-    raw: brand || {},
+    Category: brandPayload?.Category || "",
+    Description: brandPayload?.Description || "",
+    TnC: brandPayload?.TnC || "",
+    ImportantInstruction: brandPayload?.ImportantInstruction || null,
+    RedeemSteps: Array.isArray(brandPayload?.RedeemSteps) ? brandPayload.RedeemSteps : [],
+    raw: brandPayload || {},
   };
 
-  const fullInsertSet = {
+  const insertOnlyFields = {
     BrandCode,
-    BrandName: brand?.BrandName || "",
-    Brandtype: selectedFieldSet.Brandtype,
-    Category: selectedFieldSet.Category,
-    DenominationList: selectedFieldSet.DenominationList,
-    Discount: selectedFieldSet.Discount,
-    Description: selectedFieldSet.Description,
-    Images: brand?.Images || "",
-    TnC: selectedFieldSet.TnC,
-    ImportantInstruction: selectedFieldSet.ImportantInstruction,
-    RedeemSteps: selectedFieldSet.RedeemSteps,
-    minPrice: selectedFieldSet.minPrice,
-    maxPrice: selectedFieldSet.maxPrice,
-    raw: selectedFieldSet.raw,
+    BrandName: brandPayload?.BrandName || "",
+    Brandtype: brandPayload?.Brandtype || "",
+    Discount: String(brandPayload?.Discount || ""),
+    customerDiscount: typeof brandPayload?.customerDiscount === "string" ? brandPayload.customerDiscount : "",
+    discountUser: typeof brandPayload?.discountUser === "string" ? brandPayload.discountUser : "",
+    enabled: typeof brandPayload?.enabled === "boolean" ? brandPayload.enabled : true,
+    notes: typeof brandPayload?.notes === "string" ? brandPayload.notes : "",
+    minPrice,
+    maxPrice,
+    DenominationList: denoms,
+    Category: brandPayload?.Category || "",
+    Description: brandPayload?.Description || "",
+    Images: brandPayload?.Images || "",
+    TnC: brandPayload?.TnC || "",
+    ImportantInstruction: brandPayload?.ImportantInstruction || null,
+    RedeemSteps: Array.isArray(brandPayload?.RedeemSteps) ? brandPayload.RedeemSteps : [],
+    raw: brandPayload || {},
+    popularity: typeof brandPayload?.popularity === "boolean" ? brandPayload.popularity : false,
   };
 
-  return {
-    filter: { BrandCode },
-    update: {
-      $set: selectedFieldSet,
-      $setOnInsert: {
-        ...fullInsertSet,
-        enabled: true,
-        popularity: false,
-      },
-    },
-  };
+  return { BrandCode, selectiveExistingFields, insertOnlyFields };
 }
-
 
 function verifyRazorpaySignature({ order_id, payment_id, signature }) {
   const body = `${order_id}|${payment_id}`;
@@ -534,15 +531,19 @@ router.post("/sync", async (req, res) => {
     let brandsUpserted = 0;
     if (Array.isArray(brandsDec)) {
       for (const b of brandsDec) {
-        const BrandCode = b?.BrandCode || b?.brandCode;
+        const { BrandCode, selectiveExistingFields, insertOnlyFields } = buildSelectiveBrandSyncUpdate(b);
         if (!BrandCode) continue;
 
-        const { filter, update } = buildGiftcardBrandSyncUpdate({
-          ...b,
-          BrandCode,
-        });
-
-        await VdBrand.findOneAndUpdate(filter, update, { upsert: true });
+        const existing = await VdBrand.exists({ BrandCode });
+        if (existing) {
+          await VdBrand.updateOne({ BrandCode }, { $set: selectiveExistingFields });
+        } else {
+          await VdBrand.updateOne(
+            { BrandCode },
+            { $set: insertOnlyFields },
+            { upsert: true },
+          );
+        }
         brandsUpserted++;
       }
     }
