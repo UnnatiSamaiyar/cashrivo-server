@@ -182,65 +182,94 @@ function decryptIfPresent(encryptedStr) {
 }
 
 
-function parseBrandDenominations(list) {
-  if (!list) return [];
-  return String(list)
-    .split(",")
-    .map((x) => Number(String(x).trim()))
-    .filter((n) => Number.isFinite(n) && n > 0)
-    .sort((a, b) => a - b);
-}
+function buildSelectiveBrandSyncUpdate(brandPayload = {}, fallbackBrandCode = "") {
+  const BrandCode = brandPayload?.BrandCode || brandPayload?.brandCode || fallbackBrandCode || "";
+  const denoms = brandPayload?.DenominationList ? String(brandPayload.DenominationList) : "";
+  const denArr = denoms
+    ? String(denoms)
+        .split(",")
+        .map((x) => Number(String(x).trim()))
+        .filter((n) => Number.isFinite(n) && n > 0)
+        .sort((a, b) => a - b)
+    : [];
 
-function buildVdBrandSyncUpdate(brand = {}) {
-  const BrandCode = brand?.BrandCode || brand?.brandCode || "";
-  const denoms = brand?.DenominationList ? String(brand.DenominationList) : "";
-  const denArr = parseBrandDenominations(denoms);
+  const minPrice = denArr.length
+    ? denArr[0]
+    : typeof brandPayload?.minPrice === "number"
+      ? brandPayload.minPrice
+      : brandPayload?.minPrice
+        ? Number(brandPayload.minPrice)
+        : null;
 
-  const selectedFieldSet = {
-    Brandtype: brand?.Brandtype || "",
-    Discount: brand?.Discount || "",
-    notes: brand?.notes || "",
-    minPrice: denArr.length ? denArr[0] : null,
-    maxPrice: denArr.length ? denArr[denArr.length - 1] : null,
+  const maxPrice = denArr.length
+    ? denArr[denArr.length - 1]
+    : typeof brandPayload?.maxPrice === "number"
+      ? brandPayload.maxPrice
+      : brandPayload?.maxPrice
+        ? Number(brandPayload.maxPrice)
+        : null;
+
+  const selectiveExistingFields = {
+    Brandtype: brandPayload?.Brandtype || "",
+    Discount: String(brandPayload?.Discount || ""),
+    notes: typeof brandPayload?.notes === "string" ? brandPayload.notes : "",
+    minPrice,
+    maxPrice,
     DenominationList: denoms,
-    Category: brand?.Category || "",
-    Description: brand?.Description || "",
-    TnC: brand?.TnC || "",
-    ImportantInstruction: brand?.ImportantInstruction || null,
-    RedeemSteps: Array.isArray(brand?.RedeemSteps) ? brand.RedeemSteps : [],
-    raw: brand || {},
+    Category: brandPayload?.Category || "",
+    Description: brandPayload?.Description || "",
+    TnC: brandPayload?.TnC || "",
+    ImportantInstruction: brandPayload?.ImportantInstruction || null,
+    RedeemSteps: Array.isArray(brandPayload?.RedeemSteps) ? brandPayload.RedeemSteps : [],
+    raw: brandPayload || {},
   };
 
-  const fullInsertSet = {
+  const insertOnlyFields = {
     BrandCode,
-    BrandName: brand?.BrandName || "",
-    Brandtype: selectedFieldSet.Brandtype,
-    Discount: selectedFieldSet.Discount,
-    minPrice: selectedFieldSet.minPrice,
-    maxPrice: selectedFieldSet.maxPrice,
-    DenominationList: selectedFieldSet.DenominationList,
-    Category: selectedFieldSet.Category,
-    Description: selectedFieldSet.Description,
-    Images: brand?.Images || "",
-    TnC: selectedFieldSet.TnC,
-    ImportantInstruction: selectedFieldSet.ImportantInstruction,
-    RedeemSteps: selectedFieldSet.RedeemSteps,
-    raw: selectedFieldSet.raw,
+    BrandName: brandPayload?.BrandName || "",
+    Brandtype: brandPayload?.Brandtype || "",
+    Discount: String(brandPayload?.Discount || ""),
+    customerDiscount: typeof brandPayload?.customerDiscount === "string" ? brandPayload.customerDiscount : "",
+    discountUser: typeof brandPayload?.discountUser === "string" ? brandPayload.discountUser : "",
+    enabled: typeof brandPayload?.enabled === "boolean" ? brandPayload.enabled : true,
+    notes: typeof brandPayload?.notes === "string" ? brandPayload.notes : "",
+    minPrice,
+    maxPrice,
+    DenominationList: denoms,
+    Category: brandPayload?.Category || "",
+    Description: brandPayload?.Description || "",
+    Images: brandPayload?.Images || "",
+    TnC: brandPayload?.TnC || "",
+    ImportantInstruction: brandPayload?.ImportantInstruction || null,
+    RedeemSteps: Array.isArray(brandPayload?.RedeemSteps) ? brandPayload.RedeemSteps : [],
+    raw: brandPayload || {},
+    popularity: typeof brandPayload?.popularity === "boolean" ? brandPayload.popularity : false,
   };
 
-  return {
-    filter: { BrandCode },
-    update: {
-      $set: selectedFieldSet,
-      $setOnInsert: {
-        ...fullInsertSet,
-        enabled: true,
-        popularity: false,
-      },
-    },
-  };
+  return { BrandCode, selectiveExistingFields, insertOnlyFields };
 }
 
+async function upsertBrandWithSelectiveSync(VdBrandModel, brandPayload = {}, fallbackBrandCode = "") {
+  const { BrandCode, selectiveExistingFields, insertOnlyFields } = buildSelectiveBrandSyncUpdate(
+    brandPayload,
+    fallbackBrandCode,
+  );
+
+  if (!BrandCode) return false;
+
+  const existing = await VdBrandModel.exists({ BrandCode });
+  if (existing) {
+    await VdBrandModel.updateOne({ BrandCode }, { $set: selectiveExistingFields });
+  } else {
+    await VdBrandModel.updateOne(
+      { BrandCode },
+      { $set: insertOnlyFields },
+      { upsert: true },
+    );
+  }
+
+  return true;
+}
 
 /**
  * 1) Generate Token
@@ -302,29 +331,12 @@ router.post("/brands", async (req, res) => {
       ? decryptIfPresent(encrypted)
       : { text: "", json: null };
 
-    // decryptedJson for brands is usually an array of brand objects
+    // Existing brands: only selected VD-sync fields should update.
+    // New brands: full document should be inserted.
     if (Array.isArray(decryptedJson)) {
-      const ops = decryptedJson
-        .map((b) => {
-          const code = b?.BrandCode || BrandCode || "";
-          if (!code) return null;
-
-          const { filter, update } = buildVdBrandSyncUpdate({
-            ...b,
-            BrandCode: code,
-          });
-
-          return {
-            updateOne: {
-              filter,
-              update,
-              upsert: true,
-            },
-          };
-        })
-        .filter(Boolean);
-
-      if (ops.length) await VdBrand.bulkWrite(ops, { ordered: false });
+      for (const b of decryptedJson) {
+        await upsertBrandWithSelectiveSync(VdBrand, b, BrandCode);
+      }
     }
 
     await logApi({
@@ -1103,27 +1115,9 @@ async function jobSyncBrandsNow() {
       : { text: "", json: null };
 
     if (Array.isArray(decryptedJson)) {
-      const ops = decryptedJson
-        .map((b) => {
-          const code = b?.BrandCode || "";
-          if (!code) return null;
-
-          const { filter, update } = buildVdBrandSyncUpdate({
-            ...b,
-            BrandCode: code,
-          });
-
-          return {
-            updateOne: {
-              filter,
-              update,
-              upsert: true,
-            },
-          };
-        })
-        .filter(Boolean);
-
-      if (ops.length) await VdBrand.bulkWrite(ops, { ordered: false });
+      for (const b of decryptedJson) {
+        await upsertBrandWithSelectiveSync(VdBrand, b);
+      }
     }
 
     await logApi({
