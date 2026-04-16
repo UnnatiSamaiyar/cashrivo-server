@@ -1693,7 +1693,7 @@ router.get("/order/:id", auth, async (req, res) => {
       const encryptedData = typeof entry?.data === "string" ? entry.data : "";
       const dec = encryptedData ? decryptVdResponseData(encryptedData) : { text: "", json: null };
       if (!vdDecrypted && dec?.json) vdDecrypted = dec.json;
-      return {
+      return { 
         ...entry,
         data: undefined,
         decrypted: dec?.json || entry?.decrypted || entry?.decryptedJson || entry?.dataDecrypted || entry?.data_decrypted || entry?.decrypted_data || null,

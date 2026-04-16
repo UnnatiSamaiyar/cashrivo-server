@@ -40,6 +40,7 @@ const launchpadRoutes = require("./routes/launchpadRoutes");
 const rivoPointsRoutes = require("./routes/rivoPoints");
 const seoSettingsRoutes = require("./routes/seoSettingsRoutes");
 const policyRoutes = require("./routes/policyRoutes");
+const ecouponRoutes = require("./routes/ecouponRoutes");
 
 require("./cron/fetchScheduler");
 
@@ -200,6 +201,7 @@ app.use("/api", searchRoutes);
 app.use("/api/launchpad", launchpadRoutes);
 app.use("/api", seoSettingsRoutes);
 app.use("/api", policyRoutes);
+app.use("/api", ecouponRoutes);
 
 // Rivo Points
 app.use("/api/rivo", rivoPointsRoutes);
