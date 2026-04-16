@@ -57,6 +57,43 @@ function slugify(value = "") {
     .replace(/^-+|-+$/g, "");
 }
 
+function sanitizePhone(value = "") {
+  const digits = String(value || "").replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.length > 10 && digits.startsWith("91")) {
+    return digits.slice(-10);
+  }
+  return digits.slice(-10);
+}
+
+function isValidEmail(value = "") {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || "").trim());
+}
+
+function getCustomerDetails(req) {
+  const name = normalizeCell(
+    req.user?.name ||
+      req.user?.fullName ||
+      req.user?.username ||
+      req.body?.customerName ||
+      "Cashrivo User"
+  );
+
+  const emailRaw = normalizeCell(req.user?.email || req.body?.customerEmail || "");
+  const contact = sanitizePhone(req.user?.phone || req.body?.customerContact || "");
+
+  const details = {
+    name: name || "Cashrivo User",
+    contact,
+  };
+
+  if (emailRaw && isValidEmail(emailRaw)) {
+    details.email = emailRaw.toLowerCase();
+  }
+
+  return details;
+}
+
 async function getOfferBySlug(slug) {
   const pipeline = [
     {
@@ -396,7 +433,16 @@ router.post("/ecoupons/public/order", auth, async (req, res) => {
       return res.status(409).json({ success: false, message: "Offer is sold out" });
     }
 
-    const order = await razorpay.orders.create({
+    const customerDetails = getCustomerDetails(req);
+
+    if (!customerDetails.contact || customerDetails.contact.length < 10) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid phone number is required on the user account before starting payment",
+      });
+    }
+
+    const orderPayload = {
       amount: RAZORPAY_ECOUPON_AMOUNT_PAISE,
       currency: "INR",
       receipt: `ecpn_${Date.now()}`,
@@ -404,8 +450,14 @@ router.post("/ecoupons/public/order", auth, async (req, res) => {
         proposition,
         userId: String(req.user?.id || ""),
         userRef: String(req.user?.userId || ""),
+        customerName: customerDetails.name,
+        customerContact: customerDetails.contact,
+        customerEmail: customerDetails.email || "",
       },
-    });
+      customer_details: customerDetails,
+    };
+
+    const order = await razorpay.orders.create(orderPayload);
 
     return res.json({
       success: true,
@@ -417,7 +469,11 @@ router.post("/ecoupons/public/order", auth, async (req, res) => {
     });
   } catch (error) {
     console.error("Error creating ecoupon order:", error);
-    return res.status(500).json({ success: false, message: "Failed to create order" });
+    return res.status(500).json({
+      success: false,
+      message: error?.error?.description || "Failed to create order",
+      razorpayError: error?.error || null,
+    });
   }
 });
 
