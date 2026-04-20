@@ -28,7 +28,15 @@ function safeRegex(q) {
   return String(q || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function makeItem({ type, title, description, route, source, score, brandCode }) {
+function makeItem({
+  type,
+  title,
+  description,
+  route,
+  source,
+  score,
+  brandCode,
+}) {
   if (!title || !route) return null;
   return {
     type,
@@ -102,10 +110,10 @@ router.get("/search", async (req, res) => {
                       : ""),
                 route: b.slug ? `/blog/${encodeURIComponent(b.slug)}` : "",
                 source: "Blogs",
-              })
+              }),
             )
-            .filter(Boolean)
-        )
+            .filter(Boolean),
+        ),
     );
 
     // Exclusive Deals (primary dataset used by /exclusive-deals page)
@@ -124,7 +132,9 @@ router.get("/search", async (req, res) => {
       })
         .sort({ featured: -1, createdAt: -1, updatedAt: -1 })
         .limit(per.lmdOffers)
-        .select("_id store title long_offer description categories code offer offer_value type")
+        .select(
+          "_id store title long_offer description categories code offer offer_value type",
+        )
         .lean()
         .then((rows) =>
           rows
@@ -142,13 +152,31 @@ router.get("/search", async (req, res) => {
                     "");
 
               const qLower = q.toLowerCase();
-              const hay = [title, c.title, store, description, c.offer, c.offer_value, c.code]
+              const hay = [
+                title,
+                c.title,
+                store,
+                description,
+                c.offer,
+                c.offer_value,
+                c.code,
+              ]
                 .filter(Boolean)
                 .join(" ")
                 .toLowerCase();
               let score = 0;
-              if (String(title || "").toLowerCase().startsWith(qLower)) score += 250;
-              if (String(store || "").toLowerCase().startsWith(qLower)) score += 220;
+              if (
+                String(title || "")
+                  .toLowerCase()
+                  .startsWith(qLower)
+              )
+                score += 250;
+              if (
+                String(store || "")
+                  .toLowerCase()
+                  .startsWith(qLower)
+              )
+                score += 220;
               if (hay.includes(qLower)) score += 120;
 
               return makeItem({
@@ -160,8 +188,8 @@ router.get("/search", async (req, res) => {
                 score,
               });
             })
-            .filter(Boolean)
-        )
+            .filter(Boolean),
+        ),
     );
 
     // Legacy coupon search fallback
@@ -189,13 +217,15 @@ router.get("/search", async (req, res) => {
                 description:
                   c.tagline ||
                   c.description ||
-                  (c.storeName && c.category ? `${c.storeName} • ${c.category}` : c.storeName || c.category || ""),
+                  (c.storeName && c.category
+                    ? `${c.storeName} • ${c.category}`
+                    : c.storeName || c.category || ""),
                 route: `/exclusive-deals?search=${encodeURIComponent(String(c.storeName || c.couponName || "").trim())}`,
                 source: "Coupons",
-              })
+              }),
             )
-            .filter(Boolean)
-        )
+            .filter(Boolean),
+        ),
     );
 
     // Site Banners (admin-managed)
@@ -220,8 +250,8 @@ router.get("/search", async (req, res) => {
                 source: "Banners",
               });
             })
-            .filter(Boolean)
-        )
+            .filter(Boolean),
+        ),
     );
 
     // Direct Brands (admin direct-brands)
@@ -257,6 +287,7 @@ router.get("/search", async (req, res) => {
     // Gift Cards
     queries.push(
       VdBrand.find({
+        enabled: true,
         $or: [
           { BrandName: rx },
           { BrandCode: rx },
@@ -284,22 +315,26 @@ router.get("/search", async (req, res) => {
 
               let score = 0;
               if (titleLower === qLower || codeLower === qLower) score += 1000;
-              if (titleLower.startsWith(qLower) || codeLower.startsWith(qLower)) score += 200;
-              if (titleLower.includes(qLower) || codeLower.includes(qLower)) score += 100;
+              if (titleLower.startsWith(qLower) || codeLower.startsWith(qLower))
+                score += 200;
+              if (titleLower.includes(qLower) || codeLower.includes(qLower))
+                score += 100;
               if (g.popularity) score += 15;
 
               return makeItem({
                 type: "giftcard",
                 title: title || brandCode || "Gift Card",
                 description,
-                route: brandCode ? `/gift-cards/${encodeURIComponent(brandCode)}` : "",
+                route: brandCode
+                  ? `/gift-cards/${encodeURIComponent(brandCode)}`
+                  : "",
                 source: "Gift Cards",
                 score,
                 brandCode,
               });
             })
-            .filter(Boolean)
-        )
+            .filter(Boolean),
+        ),
     );
 
     // Amazon Banners (optional model)
