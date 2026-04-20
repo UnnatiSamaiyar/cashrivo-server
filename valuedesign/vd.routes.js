@@ -818,7 +818,7 @@ router.get("/db/brands", async (req, res) => {
     const search = (req.query.search || req.query.q || "").toString().trim();
     const category = (req.query.category || "").toString().trim();
 
-    const q = {};
+    const q = {enabled: true,};
     if (search) {
       q.$or = [
         { BrandCode: { $regex: search, $options: "i" } },
