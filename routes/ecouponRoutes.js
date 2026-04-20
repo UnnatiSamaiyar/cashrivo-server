@@ -11,8 +11,8 @@ const auth = require("../middleware/auth");
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
-const RAZORPAY_ECOUPON_PRICE = 2;
-const RAZORPAY_ECOUPON_AMOUNT_PAISE = 200;
+const RAZORPAY_ECOUPON_PRICE = 5;
+const RAZORPAY_ECOUPON_AMOUNT_PAISE = 500;
 const razorpayKeyId = process.env.RAZORPAY_KEY_ID;
 const razorpayKeySecret = process.env.RAZORPAY_KEY_SECRET;
 const razorpay =
