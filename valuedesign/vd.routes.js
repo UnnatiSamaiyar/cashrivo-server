@@ -9,6 +9,7 @@ const VdBrand = require("../models/VdBrand");
 const VdStore = require("../models/VdStore");
 const VdEvcOrder = require("../models/VdEvcOrder");
 const VdWallet = require("../models/VdWallet");
+const GiftcardPurchases = require("../models/GiftcardPurchase");
 const path = require("path");
 const multer = require("multer");
 const fs = require("fs");
@@ -901,11 +902,11 @@ router.get("/db/orders", async (req, res) => {
     }
 
     const [items, total] = await Promise.all([
-      VdEvcOrder.find(q)
+      GiftcardPurchases.find(q)
         .sort({ updatedAt: -1 })
         .skip((page - 1) * limit)
         .limit(limit),
-      VdEvcOrder.countDocuments(q),
+      GiftcardPurchases.countDocuments(q),
     ]);
 
     res.json({ success: true, page, limit, total, items });
