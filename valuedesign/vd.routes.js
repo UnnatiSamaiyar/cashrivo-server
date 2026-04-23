@@ -129,6 +129,16 @@ function normalizeNullableNumber(v) {
   return n;
 }
 
+function normalizeBrandCapping(v) {
+  if (v === undefined) return undefined;
+  if (v === null) return null;
+  const s = String(v).trim();
+  if (!s) return null;
+  const n = Number(s.replace(/,/g, ""));
+  if (!Number.isFinite(n) || n < 0) throw new Error("Invalid capping value");
+  return n;
+}
+
 async function logApi({
   type,
   req,
@@ -214,6 +224,7 @@ function buildSelectiveBrandSyncUpdate(brandPayload = {}, fallbackBrandCode = ""
     Brandtype: brandPayload?.Brandtype || "",
     Discount: String(brandPayload?.Discount || ""),
     notes: typeof brandPayload?.notes === "string" ? brandPayload.notes : "",
+    capping: normalizeBrandCapping(brandPayload?.capping),
     minPrice,
     maxPrice,
     DenominationList: denoms,
@@ -970,6 +981,10 @@ async function ensureBrandAdminFieldsForExistingBrands() {
         { enabled: { $exists: false } },
         { $set: { enabled: true } }
       ),
+      VdBrand.updateMany(
+        { capping: { $exists: false } },
+        { $set: { capping: null } }
+      ),
     ]);
   } catch (e) {
     // ignore migration issues at boot
@@ -1279,6 +1294,7 @@ router.patch("/admin/brands/update", async (req, res) => {
 
     if (req.body.minPrice !== undefined) patch.minPrice = normalizeNullableNumber(req.body.minPrice);
     if (req.body.maxPrice !== undefined) patch.maxPrice = normalizeNullableNumber(req.body.maxPrice);
+    if (req.body.capping !== undefined) patch.capping = normalizeBrandCapping(req.body.capping);
     if (req.body.DenominationList !== undefined) patch.DenominationList = sanitizeString(req.body.DenominationList).trim();
     if (req.body.Category !== undefined) patch.Category = sanitizeString(req.body.Category).trim();
     if (req.body.Description !== undefined) patch.Description = sanitizeString(req.body.Description);
