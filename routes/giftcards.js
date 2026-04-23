@@ -294,6 +294,15 @@ async function incMonthlyUsage({ brandKey, monthKey, userId, spendPaiseInc, disc
   );
 }
 
+function normalizeBrandCapping(value) {
+  if (value === undefined || value === null) return null;
+
+  const num = Number(value);
+  if (!Number.isFinite(num) || num <= 0) return null;
+
+  return num;
+}
+
 function resolveBrandSpendCapPaise(brandDoc) {
   const customCapRupees = normalizeBrandCapping(brandDoc?.capping);
   if (customCapRupees === null || customCapRupees === undefined) {
