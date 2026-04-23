@@ -73,22 +73,12 @@ function parseDenoms(list) {
 }
 
 
-function normalizeBrandCapping(value) {
-  if (value === undefined) return undefined;
-  if (value === null) return null;
-  const s = String(value).trim();
-  if (!s) return null;
-  const n = Number(s.replace(/,/g, ""));
-  return Number.isFinite(n) && n >= 0 ? n : null;
-}
-
 function buildSelectiveBrandSyncUpdate(brandPayload = {}) {
   const BrandCode = brandPayload?.BrandCode || brandPayload?.brandCode || "";
   const denoms = brandPayload?.DenominationList ? String(brandPayload.DenominationList) : "";
   const denArr = parseDenoms(denoms);
   const minPrice = denArr.length ? denArr[0] : null;
   const maxPrice = denArr.length ? denArr[denArr.length - 1] : null;
-  const capping = normalizeBrandCapping(brandPayload?.capping);
 
   const selectiveExistingFields = {
     Brandtype: brandPayload?.Brandtype || "",
@@ -102,7 +92,6 @@ function buildSelectiveBrandSyncUpdate(brandPayload = {}) {
     TnC: brandPayload?.TnC || "",
     ImportantInstruction: brandPayload?.ImportantInstruction || null,
     RedeemSteps: Array.isArray(brandPayload?.RedeemSteps) ? brandPayload.RedeemSteps : [],
-    capping,
     raw: brandPayload || {},
   };
 
@@ -124,7 +113,6 @@ function buildSelectiveBrandSyncUpdate(brandPayload = {}) {
     TnC: brandPayload?.TnC || "",
     ImportantInstruction: brandPayload?.ImportantInstruction || null,
     RedeemSteps: Array.isArray(brandPayload?.RedeemSteps) ? brandPayload.RedeemSteps : [],
-    capping,
     raw: brandPayload || {},
     popularity: typeof brandPayload?.popularity === "boolean" ? brandPayload.popularity : false,
   };
@@ -306,10 +294,10 @@ async function incMonthlyUsage({ brandKey, monthKey, userId, spendPaiseInc, disc
   );
 }
 
-function resolveBrandSpendCapPaise(brandDoc, policy) {
+function resolveBrandSpendCapPaise(brandDoc) {
   const customCapRupees = normalizeBrandCapping(brandDoc?.capping);
   if (customCapRupees === null || customCapRupees === undefined) {
-    return Number(policy?.monthlySpendCapPaise || 0);
+    return 0;
   }
   return Math.max(0, Math.round(customCapRupees * 100));
 }
@@ -649,7 +637,8 @@ router.post("/order", auth, async (req, res) => {
 
     const brandKey = detectBrandKey({ brandName: brand.BrandName, brandCode });
     const pol = policyFor(brandKey);
-    const monthlySpendCapPaise = resolveBrandSpendCapPaise(brand, pol);
+    const usageKey = `BRAND:${String(brand.BrandCode || brandCode).trim().toUpperCase()}`;
+    const monthlySpendCapPaise = resolveBrandSpendCapPaise(brand);
     const monthKey = monthKeyUtc();
 
     const a = Number(amount);
@@ -695,8 +684,8 @@ router.post("/order", auth, async (req, res) => {
     let discountPaise = disc > 0 ? Math.round((totalPaise * disc) / 100) : 0;
 
     debugStep = "monthly-cap-check";
-    if (pol.brandKey !== "NORMAL") {
-      const usage = await readMonthlyUsage({ brandKey: pol.brandKey, monthKey, userId: req.user?.id });
+    if (monthlySpendCapPaise > 0 || pol.brandKey !== "NORMAL") {
+      const usage = await readMonthlyUsage({ brandKey: usageKey, monthKey, userId: req.user?.id });
 
       const projectedSpend = Number(usage.spendPaise || 0) + Number(totalPaise);
       if (monthlySpendCapPaise > 0 && projectedSpend > monthlySpendCapPaise) {
@@ -749,9 +738,11 @@ router.post("/order", auth, async (req, res) => {
       status: "PENDING_PAYMENT",
       policy: {
         brandKey: pol.brandKey,
+        usageKey,
         monthKey,
         spendPaise: totalPaise,
         discountPaise,
+        monthlySpendCapPaise,
       },
     });
 
@@ -1009,8 +1000,11 @@ router.post("/verify", auth, async (req, res) => {
       detectBrandKey({ brandName: purchase.brandName, brandCode: purchase.brandCode });
     const pol = policyFor(enforcedBrandKey);
     const currentBrand = await VdBrand.findOne({ BrandCode: purchase.brandCode }).select("BrandCode BrandName capping").lean();
-    const monthlySpendCapPaise = resolveBrandSpendCapPaise(currentBrand, pol);
-    if (pol.brandKey !== "NORMAL") {
+    const usageKey =
+      String(purchase.policy?.usageKey || `BRAND:${String(purchase.brandCode || "").trim().toUpperCase()}`);
+    const monthlySpendCapPaise =
+      Number(purchase.policy?.monthlySpendCapPaise || 0) || resolveBrandSpendCapPaise(currentBrand);
+    if (monthlySpendCapPaise > 0 || pol.brandKey !== "NORMAL") {
       // Payment method enforcement (no phone OTP / VPA binding)
       let method = "";
       if (isPaymentTest()) {
@@ -1026,7 +1020,7 @@ router.post("/verify", auth, async (req, res) => {
 
       // Monthly cap re-check (defense in depth)
       const monthKey = purchase.policy?.monthKey || monthKeyUtc();
-      const usage = await readMonthlyUsage({ brandKey: pol.brandKey, monthKey, userId: req.user?.id });
+      const usage = await readMonthlyUsage({ brandKey: usageKey, monthKey, userId: req.user?.id });
 
       const spendInc = Number(purchase.policy?.spendPaise || Math.round(Number(purchase.amount || 0) * Number(purchase.qty || 1) * 100));
       const discountInc = Number(purchase.policy?.discountPaise || 0);
@@ -1038,7 +1032,13 @@ router.post("/verify", auth, async (req, res) => {
         return res.status(409).json({ success: false, code: "MONTHLY_DISCOUNT_CAP_EXCEEDED", message: "Monthly discount cap exceeded for this brand" });
       }
 
-      purchase.policy = { ...(purchase.policy || {}), brandKey: pol.brandKey, monthKey };
+      purchase.policy = {
+        ...(purchase.policy || {}),
+        brandKey: pol.brandKey,
+        usageKey,
+        monthKey,
+        monthlySpendCapPaise,
+      };
     }
 
     // ---------------------------
@@ -1070,9 +1070,9 @@ router.post("/verify", auth, async (req, res) => {
       };
       purchase.status = "SUCCESS_TEST";
 
-      if (purchase.policy?.brandKey && purchase.policy.brandKey !== "NORMAL" && !purchase.policy?._usageCounted) {
+      if (Number(purchase.policy?.monthlySpendCapPaise || 0) > 0 && purchase.policy?.usageKey && !purchase.policy?._usageCounted) {
         await incMonthlyUsage({
-          brandKey: purchase.policy.brandKey,
+          brandKey: purchase.policy.usageKey,
           monthKey: purchase.policy.monthKey || monthKeyUtc(),
           userId: req.user?.id,
           spendPaiseInc: purchase.policy.spendPaise || 0,
@@ -1194,9 +1194,9 @@ router.post("/verify", auth, async (req, res) => {
       // already approved earlier, don't call VD again
       purchase.status = "SUCCESS";
       // monthly usage (idempotent guard: only increment when first time)
-      if (purchase.policy?.brandKey && purchase.policy.brandKey !== "NORMAL" && !purchase.policy?._usageCounted) {
+      if (Number(purchase.policy?.monthlySpendCapPaise || 0) > 0 && purchase.policy?.usageKey && !purchase.policy?._usageCounted) {
         await incMonthlyUsage({
-          brandKey: purchase.policy.brandKey,
+          brandKey: purchase.policy.usageKey,
           monthKey: purchase.policy.monthKey || monthKeyUtc(),
           userId: req.user?.id,
           spendPaiseInc: purchase.policy.spendPaise || 0,
@@ -1236,9 +1236,9 @@ router.post("/verify", auth, async (req, res) => {
       purchase.status = "SUCCESS_TEST";
 
       // monthly usage
-      if (purchase.policy?.brandKey && purchase.policy.brandKey !== "NORMAL" && !purchase.policy?._usageCounted) {
+      if (Number(purchase.policy?.monthlySpendCapPaise || 0) > 0 && purchase.policy?.usageKey && !purchase.policy?._usageCounted) {
         await incMonthlyUsage({
-          brandKey: purchase.policy.brandKey,
+          brandKey: purchase.policy.usageKey,
           monthKey: purchase.policy.monthKey || monthKeyUtc(),
           userId: req.user?.id,
           spendPaiseInc: purchase.policy.spendPaise || 0,
@@ -1610,18 +1610,19 @@ router.get("/monthly-limit", auth, async (req, res) => {
     const brandName = brandNameFromQuery || brand?.BrandName || "";
     const brandKey = detectBrandKey({ brandName, brandCode });
     const pol = policyFor(brandKey);
-    const monthlySpendCapPaise = resolveBrandSpendCapPaise(brand, pol);
+    const usageKey = `BRAND:${String(brandCode || "").trim().toUpperCase()}`;
+    const monthlySpendCapPaise = resolveBrandSpendCapPaise(brand);
     const monthKey = monthKeyUtc();
 
-    // Only brands with cap tracking need the widget.
-    if (pol.brandKey === "NORMAL" || !monthlySpendCapPaise) {
+    // Only brands with saved capping should show the widget.
+    if (!monthlySpendCapPaise) {
       return res.json({
         success: true,
         // eligible=false => show "Inactive" in UI
         eligible: false,
         trackingActive: false,
         active: false,
-        brandKey: "NORMAL",
+        brandKey: pol.brandKey === "NONE" ? "NORMAL" : pol.brandKey,
         monthKey,
         capPaise: 0,
         currentPaise: 0,
@@ -1636,7 +1637,7 @@ router.get("/monthly-limit", auth, async (req, res) => {
     const addSpendPaise = Number.isFinite(amount) && amount > 0 ? Math.round(amount * qty * 100) : 0;
 
     // Monthly usage is tracked per authenticated user (no phone OTP / VPA binding).
-    const usage = await readMonthlyUsage({ brandKey: pol.brandKey, monthKey, userId: req.user?.id });
+    const usage = await readMonthlyUsage({ brandKey: usageKey, monthKey, userId: req.user?.id });
 
     const currentPaise = Number(usage?.spendPaise || 0);
     const afterPurchasePaise = currentPaise + addSpendPaise;
@@ -1650,7 +1651,7 @@ router.get("/monthly-limit", auth, async (req, res) => {
       eligible: true,
       trackingActive: true,
       active: true,
-      brandKey: pol.brandKey,
+      brandKey: pol.brandKey === "NONE" ? "NORMAL" : pol.brandKey,
       monthKey,
       capPaise: monthlySpendCapPaise,
       currentPaise,
