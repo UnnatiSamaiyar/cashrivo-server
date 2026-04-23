@@ -18,7 +18,7 @@ const VdBrandSchema = new mongoose.Schema(
     // customer discount (editable). If empty -> fallback to vendor Discount.
     customerDiscount: { type: String, default: "" },
 
-    // ✅ NEW: admin-set user discount % (store what admin entered, in %)
+    // ✅ admin-set user discount % (store what admin entered, in %)
     discountUser: { type: String, default: "" },
 
     enabled: { type: Boolean, default: true, index: true },
@@ -26,6 +26,10 @@ const VdBrandSchema = new mongoose.Schema(
 
     minPrice: { type: Number, default: null },
     maxPrice: { type: Number, default: null },
+
+    // ✅ NEW: brand-level monthly cap
+    capping: { type: Number, default: null },
+
     DenominationList: { type: String, default: "" },
 
     Category: { type: String, default: "" },
