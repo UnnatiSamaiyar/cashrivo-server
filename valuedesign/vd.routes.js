@@ -219,7 +219,14 @@ function buildSelectiveBrandSyncUpdate(brandPayload = {}, fallbackBrandCode = ""
       : brandPayload?.maxPrice
         ? Number(brandPayload.maxPrice)
         : null;
-
+const parsedCapping =
+    typeof brandPayload?.capping === "number"
+      ? brandPayload.capping
+      : brandPayload?.capping !== undefined &&
+        brandPayload?.capping !== null &&
+        String(brandPayload.capping).trim() !== ""
+        ? Number(brandPayload.capping)
+        : null;
   const selectiveExistingFields = {
     Brandtype: brandPayload?.Brandtype || "",
     Discount: String(brandPayload?.Discount || ""),
