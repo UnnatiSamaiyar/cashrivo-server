@@ -953,16 +953,51 @@ router.get("/db/logs", async (req, res) => {
     }
 
     const [items, total] = await Promise.all([
-      VdApiLog.find(q)
-        .sort({ createdAt: -1 })
-        .skip((page - 1) * limit)
-        .limit(limit),
-      VdApiLog.countDocuments(q),
-    ]);
+  VdApiLog.find(q)
+    .sort({ createdAt: -1 })
+    .skip((page - 1) * limit)
+    .limit(limit)
+    .allowDiskUse(true)
+    .lean(),
+  VdApiLog.countDocuments(q),
+]);
 
     res.json({ success: true, page, limit, total, items });
   } catch (e) {
     res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// GET /api/vd/db/latest-token
+router.get("/db/latest-token", async (req, res) => {
+  try {
+    const latestTokenLog = await VdApiLog.findOne({ type: "TOKEN" })
+      .sort({ createdAt: -1 })
+      .select({
+        decryptedText: 1,
+        "responseRaw.expiry_date": 1,
+        createdAt: 1,
+      })
+      .lean();
+
+    if (!latestTokenLog) {
+      return res.status(404).json({
+        success: false,
+        message: "No token log found",
+      });
+    }
+
+    return res.json({
+      success: true,
+      token: latestTokenLog.decryptedText || "",
+      expiryDate: latestTokenLog.responseRaw?.expiry_date || null,
+      createdAt: latestTokenLog.createdAt,
+    });
+  } catch (e) {
+    return res.status(500).json({
+      success: false,
+      message: e.message,
+    });
   }
 });
 
