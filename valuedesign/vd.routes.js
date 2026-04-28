@@ -385,6 +385,84 @@ router.post("/brands", async (req, res) => {
   }
 });
 
+// POST /api/vd/brands/auto-sync
+router.post("/brands/auto-sync", async (req, res) => {
+  const url = URLS.BRANDS;
+
+  try {
+    assertUrl(url, "VD_BRAND_URL");
+
+    const latestTokenLog = await VdApiLog.findOne({ type: "TOKEN" })
+      .sort({ createdAt: -1 })
+      .select({ decryptedText: 1, "responseRaw.expiry_date": 1 })
+      .lean();
+
+    const token = latestTokenLog?.decryptedText || "";
+
+    if (!token) {
+      return res.status(404).json({
+        success: false,
+        message: "No latest VD token found in logs",
+      });
+    }
+
+    const BrandCode = "";
+
+    const responseRaw = await vdPost(
+      url,
+      { BrandCode },
+      { token },
+      20000
+    );
+
+    const encrypted =
+      responseRaw?.data && typeof responseRaw.data === "string"
+        ? responseRaw.data
+        : "";
+
+    const { text: decryptedText, json: decryptedJson } = encrypted
+      ? decryptIfPresent(encrypted)
+      : { text: "", json: null };
+
+    let syncedCount = 0;
+
+    if (Array.isArray(decryptedJson)) {
+      for (const b of decryptedJson) {
+        await upsertBrandWithSelectiveSync(VdBrand, b, BrandCode);
+        syncedCount += 1;
+      }
+    }
+
+    await logApi({
+      type: "BRANDS",
+      req,
+      url,
+      token,
+      requestBody: { BrandCode },
+      responseRaw,
+      encrypted,
+      decryptedText,
+      decryptedJson,
+      refs: { BrandCode },
+    });
+
+    return res.json({
+      success: true,
+      message: "Brands synced successfully",
+      syncedCount,
+      tokenExpiryDate: latestTokenLog?.responseRaw?.expiry_date || null,
+      response: responseRaw,
+      decrypted: decryptedJson || decryptedText || null,
+    });
+  } catch (err) {
+    return res.status(err.statusCode || 500).json({
+      success: false,
+      message: err.message,
+      vd_error: err.response?.data || null,
+    });
+  }
+});
+
 /**
  * 3) Get Store List
  * POST /api/vd/stores
@@ -969,6 +1047,7 @@ router.get("/db/logs", async (req, res) => {
 });
 
 // GET /api/vd/db/latest-token
+
 router.get("/db/latest-token", async (req, res) => {
   try {
     const latestTokenLog = await VdApiLog.findOne({ type: "TOKEN" })
