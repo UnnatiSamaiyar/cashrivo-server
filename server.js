@@ -41,6 +41,7 @@ const rivoPointsRoutes = require("./routes/rivoPoints");
 const seoSettingsRoutes = require("./routes/seoSettingsRoutes");
 const policyRoutes = require("./routes/policyRoutes");
 const ecouponRoutes = require("./routes/ecouponRoutes");
+const corporateInquiryRoute = require("./routes/corporateInquiry.routes");
 
 require("./cron/fetchScheduler");
 
@@ -202,6 +203,7 @@ app.use("/api/launchpad", launchpadRoutes);
 app.use("/api", seoSettingsRoutes);
 app.use("/api", policyRoutes);
 app.use("/api", ecouponRoutes);
+app.use("/api", corporateInquiryRoute);
 
 // Rivo Points
 app.use("/api/rivo", rivoPointsRoutes);

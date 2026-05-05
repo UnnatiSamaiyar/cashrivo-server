@@ -22,6 +22,7 @@ const { vdEncryptBase64 } = require("../utils/vdEncrypt");
 const { vdDecryptBase64, safeJsonParse } = require("../utils/vdCrypto");
 const { encryptJson, decryptJson } = require("../utils/secretBox");
 const { sendMail } = require("../services/mailer");
+const { normalizeGiftPurchaseContract, assertGiftPurchaseContract } = require("../utils/giftPurchaseContract");
 
 const router = express.Router();
 
@@ -721,6 +722,14 @@ router.post("/order", auth, async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid payable total" });
     }
 
+    debugStep = "gift-contract";
+    const giftPurchaseContract = normalizeGiftPurchaseContract(req.body || {});
+    try {
+      assertGiftPurchaseContract(giftPurchaseContract);
+    } catch (contractErr) {
+      return res.status(400).json({ success: false, message: contractErr.message });
+    }
+
     debugStep = "user-load";
     const userDoc = await User.findById(req.user?.id)
       .select("name email phone address city state pincode")
@@ -744,6 +753,9 @@ router.post("/order", auth, async (req, res) => {
         state: userDoc?.state || "",
         pincode: userDoc?.pincode || "",
       },
+      purchase_type: giftPurchaseContract.purchase_type,
+      recipient: giftPurchaseContract.recipient,
+      delivery: giftPurchaseContract.delivery,
       status: "PENDING_PAYMENT",
       policy: {
         brandKey: pol.brandKey,
@@ -892,6 +904,7 @@ router.post("/verify", auth, async (req, res) => {
 
     const purchaseId = body.purchaseId;
     const buyer = body.buyer;
+    const giftPurchaseContract = normalizeGiftPurchaseContract(body);
 
     // TEST mode verification (no real money)
     const testPaymentToken = body.testPaymentToken;
@@ -953,6 +966,16 @@ router.post("/verify", auth, async (req, res) => {
     // Update buyer details if provided from UI checkout
     if (buyer && typeof buyer === "object") {
       purchase.buyer = { ...purchase.buyer, ...buyer };
+    }
+
+    // Persist gift/self contract snapshot. No delivery is triggered in Phase 3.
+    try {
+      assertGiftPurchaseContract(giftPurchaseContract);
+      purchase.purchase_type = giftPurchaseContract.purchase_type;
+      purchase.recipient = giftPurchaseContract.recipient;
+      purchase.delivery = giftPurchaseContract.delivery;
+    } catch (contractErr) {
+      return res.status(400).json({ success: false, message: contractErr.message });
     }
 
     if (!isPaymentTest()) {
