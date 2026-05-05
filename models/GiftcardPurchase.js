@@ -13,6 +13,26 @@ const BuyerSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const GiftRecipientSchema = new mongoose.Schema(
+  {
+    name: { type: String, default: "" },
+    email: { type: String, default: "" },
+    mobile: { type: String, default: "" },
+    message: { type: String, default: "" },
+  },
+  { _id: false }
+);
+
+const GiftDeliverySchema = new mongoose.Schema(
+  {
+    mode: { type: String, enum: ["INSTANT", "SCHEDULED"], default: "INSTANT" },
+    scheduled_at: { type: Date, default: null },
+    channel: { type: String, enum: ["EMAIL", "MOBILE", "EMAIL_AND_MOBILE", "SELF"], default: "SELF" },
+    status: { type: String, enum: ["NOT_REQUIRED", "PENDING", "STORED"], default: "NOT_REQUIRED" },
+  },
+  { _id: false }
+);
+
 const GiftcardPurchaseSchema = new mongoose.Schema(
   {
     // Owner user (required for order history). Kept optional for backward compatibility.
@@ -29,6 +49,10 @@ const GiftcardPurchaseSchema = new mongoose.Schema(
     totalAmount: Number,
 
     buyer: BuyerSchema,
+
+    purchase_type: { type: String, enum: ["SELF", "GIFT"], default: "SELF", index: true },
+    recipient: { type: GiftRecipientSchema, default: null },
+    delivery: { type: GiftDeliverySchema, default: () => ({ mode: "INSTANT", scheduled_at: null, channel: "SELF", status: "NOT_REQUIRED" }) },
 
     razorpay: {
       order_id: { type: String, index: true },
