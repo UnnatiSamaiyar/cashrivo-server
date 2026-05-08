@@ -172,6 +172,17 @@ function safeMobile(m) {
   return s;
 }
 
+function isFullyLiveFulfillment() {
+  return PAYMENT_MODE === "LIVE" && VD_MODE === "LIVE";
+}
+
+function shouldAllowFallbackMock() {
+  // Never allow mock voucher fallback when both payment and VD are live.
+  // This prevents live paid orders from being marked SUCCESS_TEST because of VD balance/API issues.
+  if (isFullyLiveFulfillment()) return false;
+  return String(process.env.ALLOW_FALLBACK_MOCK || "").toLowerCase() === "true";
+}
+
 function mustNotMockInProd() {
   const isProd = String(process.env.NODE_ENV || "").toLowerCase() === "production";
   // In production we only hard-block PAYMENT/VD test modes.
@@ -181,6 +192,9 @@ function mustNotMockInProd() {
   }
   if (isProd && isVdTest()) {
     throw new Error("VD_MODE=MOCK/TEST is not allowed in production");
+  }
+  if (isProd && String(process.env.ALLOW_FALLBACK_MOCK || "").toLowerCase() === "true") {
+    throw new Error("ALLOW_FALLBACK_MOCK=true is not allowed in production");
   }
 }
 
@@ -1074,92 +1088,10 @@ router.post("/verify", auth, async (req, res) => {
     }
 
     // ---------------------------
-    // Amazon / Flipkart dummy fulfillment
+    // LIVE fulfillment safety
     // ---------------------------
-    if (pol.brandKey === "AMAZON" || pol.brandKey === "FLIPKART") {
-      const qty = Math.max(1, Number(purchase.qty || 1));
-      const vouchers = {
-        mode: "POLICY_DUMMY",
-        provider: "Cashrivo",
-        note: `${pol.brandKey} temporary dummy fulfillment`,
-        items: Array.from({ length: qty }).map((_, i) => ({
-          code: `${pol.brandKey}-DUMMY-${String(purchase._id).slice(-6)}-${i + 1}`,
-          pin: String(Math.floor(1000 + Math.random() * 9000)),
-          amount: Number(purchase.amount || 0),
-          currency: "INR",
-          expiry: "2027-12-31",
-          brand: String(purchase.brandName || ""),
-          isDummy: true,
-        })),
-      };
-
-      purchase.vouchers_enc = encryptJson(vouchers);
-      purchase.vouchers_masked = maskVouchers(vouchers);
-      purchase.vdRaw = {
-        dummy: true,
-        provider: "Cashrivo",
-        reason: `${pol.brandKey} direct VD issuance disabled`,
-      };
-      purchase.status = "SUCCESS_TEST";
-
-      if (Number(purchase.policy?.monthlySpendCapPaise || 0) > 0 && purchase.policy?.usageKey && !purchase.policy?._usageCounted) {
-        await incMonthlyUsage({
-          brandKey: purchase.policy.usageKey,
-          monthKey: purchase.policy.monthKey || monthKeyUtc(),
-          userId: req.user?.id,
-          spendPaiseInc: purchase.policy.spendPaise || 0,
-          discountPaiseInc: purchase.policy.discountPaise || 0,
-        });
-        purchase.policy._usageCounted = true;
-      }
-
-      await purchase.save();
-
-      try {
-        const to = buyerEmail;
-        const subject = `Your Cashrivo Gift Card - ${purchase.brandName}`;
-        const html = buildGiftCardEmailHtml({
-          brandName: purchase.brandName,
-          totalAmount: purchase.totalAmount,
-          orderId: purchase._id,
-          vouchers,
-        });
-        const info = await sendMail({
-          to,
-          subject,
-          html,
-          text: "Your gift card is ready. Please login to Cashrivo to view.",
-        });
-        purchase.emailDelivery = {
-          sent: true,
-          to,
-          messageId: String(info?.messageId || ""),
-          error: "",
-          sentAt: new Date(),
-        };
-        await purchase.save();
-      } catch (e) {
-        purchase.emailDelivery = {
-          sent: false,
-          to: buyerEmail,
-          messageId: "",
-          error: String(e?.message || e),
-          sentAt: null,
-        };
-        await purchase.save();
-      }
-
-      const rivo = await awardRivoPointsForPurchase({ userId: req.user?.id, purchase });
-
-      return res.json({
-        success: true,
-        purchaseId: String(purchase._id),
-        status: purchase.status,
-        vdFallback: true,
-        dummyGiftcard: true,
-        rivo,
-      });
-    }
+    // Earlier this flow forced Amazon/Flipkart into dummy SUCCESS_TEST fulfillment.
+    // In live mode, all eligible brands must continue to the normal VD issuance path below.
 
     // ---------------------------
     // EXACT VD PLAIN PAYLOAD (as you demanded)
@@ -1167,8 +1099,7 @@ router.post("/verify", auth, async (req, res) => {
     // helpers
     const isDebug =
       String(process.env.VD_DEBUG_PAYLOAD || "").toLowerCase() === "true";
-    const allowFallback =
-      String(process.env.ALLOW_FALLBACK_MOCK || "").toLowerCase() === "true";
+    const allowFallback = shouldAllowFallbackMock();
 
     function randId(len = 16) {
       const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
