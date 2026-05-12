@@ -9,6 +9,7 @@ const auth = require("../middleware/auth");
 const VdBrand = require("../models/VdBrand");
 const VdStore = require("../models/VdStore");
 const GiftcardPurchase = require("../models/GiftcardPurchase");
+const GiftcardCart = require("../models/GiftcardCart");
 const User = require("../models/User");
 const RivoPointTransaction = require("../models/RivoPointTransaction");
 
@@ -38,6 +39,8 @@ const VD_MODE = String(process.env.VD_MODE || "LIVE").trim().toUpperCase(); // L
 
 // Limits
 const MAX_GIFTCARD_QTY = Math.max(1, Math.min(Number(process.env.MAX_GIFTCARD_QTY || 10), 20));
+const MAX_GIFTCARD_CART_ITEMS = Math.max(1, Math.min(Number(process.env.MAX_GIFTCARD_CART_ITEMS || 25), 100));
+const GIFTCARD_CART_TTL_DAYS = Math.max(1, Math.min(Number(process.env.GIFTCARD_CART_TTL_DAYS || 60), 365));
 
 function isPaymentTest() {
   return PAYMENT_MODE === "TEST";
@@ -326,6 +329,351 @@ function resolveBrandSpendCapPaise(brandDoc) {
   return Math.max(0, Math.round(customCapRupees * 100));
 }
 
+function normalizeCartBrandCode(value) {
+  return String(value || "").trim().toUpperCase();
+}
+
+function parsePercent(value) {
+  const num = Number(String(value ?? "").replace(/[^0-9.]/g, ""));
+  if (!Number.isFinite(num) || num <= 0) return 0;
+  return Math.min(num, 100);
+}
+
+function parseDenominationRules(list) {
+  const raw = String(list || "").trim();
+  if (!raw) return { denominations: [], min: null, max: null, isRange: false };
+
+  const rangeMatch = raw.match(/^(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)$/);
+  if (rangeMatch) {
+    const min = Number(rangeMatch[1]);
+    const max = Number(rangeMatch[2]);
+    if (Number.isFinite(min) && Number.isFinite(max)) {
+      return { denominations: [], min: Math.min(min, max), max: Math.max(min, max), isRange: true };
+    }
+  }
+
+  const denominations = raw
+    .split(",")
+    .map((x) => Number(String(x).trim()))
+    .filter((n) => Number.isFinite(n) && n > 0)
+    .sort((a, b) => a - b);
+
+  return {
+    denominations,
+    min: denominations.length ? denominations[0] : null,
+    max: denominations.length ? denominations[denominations.length - 1] : null,
+    isRange: false,
+  };
+}
+
+function resolveAmountBounds(brand = {}) {
+  const rules = parseDenominationRules(brand?.DenominationList);
+  const dbMin = Number(brand?.minPrice);
+  const dbMax = Number(brand?.maxPrice);
+  const minPrice = Number.isFinite(dbMin) && dbMin > 0 ? dbMin : rules.min;
+  const maxPrice = Number.isFinite(dbMax) && dbMax > 0 ? dbMax : rules.max;
+
+  return {
+    minPrice,
+    maxPrice,
+    denominations: rules.denominations,
+    isRange: rules.isRange,
+  };
+}
+
+function validateGiftcardCartAmount({ brand, amount }) {
+  if (!brand) {
+    return { valid: false, code: "BRAND_NOT_FOUND", message: "Gift card brand is no longer available" };
+  }
+
+  if (brand.enabled === false) {
+    return { valid: false, code: "BRAND_DISABLED", message: "Gift card brand is currently disabled" };
+  }
+
+  const a = Number(amount);
+  if (!Number.isFinite(a) || a <= 0) {
+    return { valid: false, code: "INVALID_AMOUNT", message: "Invalid amount" };
+  }
+
+  const { minPrice, maxPrice, denominations } = resolveAmountBounds(brand);
+  const brandType = String(brand?.Brandtype || "").trim().toLowerCase();
+
+  if (brandType === "fixed" && denominations.length && !denominations.includes(a)) {
+    return {
+      valid: false,
+      code: "INVALID_DENOMINATION",
+      message: "Amount must match an available denomination",
+      meta: { denominations },
+    };
+  }
+
+  if (Number.isFinite(minPrice) && a < minPrice) {
+    return {
+      valid: false,
+      code: "AMOUNT_BELOW_MIN",
+      message: `Minimum amount is ₹${minPrice}`,
+      meta: { minPrice, maxPrice },
+    };
+  }
+
+  if (Number.isFinite(maxPrice) && a > maxPrice) {
+    return {
+      valid: false,
+      code: "AMOUNT_ABOVE_MAX",
+      message: `Maximum amount is ₹${maxPrice}`,
+      meta: { minPrice, maxPrice },
+    };
+  }
+
+  return { valid: true, code: "OK", message: "Valid", meta: { minPrice, maxPrice, denominations } };
+}
+
+function sanitizeCartQty(qty, fallback = 1) {
+  const n = Number(qty);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.trunc(n);
+}
+
+function calculateGiftcardCartPricing({ brand, amount, qty }) {
+  const a = Number(amount);
+  const q = sanitizeCartQty(qty, 1);
+  const safeQty = Math.max(1, q);
+  const totalPaise = Math.max(0, Math.round(a * safeQty * 100));
+
+  const detectedBrandKey = detectBrandKey({ brandName: brand?.BrandName, brandCode: brand?.BrandCode });
+  const pol = policyFor(detectedBrandKey);
+
+  const vendorDiscount = parsePercent(brand?.Discount);
+  const customerDiscount = parsePercent(brand?.customerDiscount) || vendorDiscount;
+  let discountPercent = customerDiscount;
+
+  if (pol.brandKey === "AMAZON") {
+    discountPercent = 0;
+  }
+  if (pol.brandKey === "FLIPKART") {
+    discountPercent = Math.min(discountPercent, Number(pol.maxDiscountPercent || 0));
+  }
+
+  const baseDiscountPaise = discountPercent > 0 ? Math.round((totalPaise * discountPercent) / 100) : 0;
+  const monthlySpendCapPaise = resolveBrandSpendCapPaise(brand);
+  const usageKey = `BRAND:${normalizeCartBrandCode(brand?.BrandCode)}`;
+
+  return {
+    brandKey: pol.brandKey === "NONE" ? "NORMAL" : pol.brandKey,
+    usageKey,
+    policy: pol,
+    totalPaise,
+    discountPercent,
+    baseDiscountPaise,
+    monthlySpendCapPaise,
+  };
+}
+
+function buildEmptyGiftcardCartResponse() {
+  return {
+    success: true,
+    cart: {
+      id: "",
+      items: [],
+      totals: {
+        itemCount: 0,
+        quantity: 0,
+        mrpPaise: 0,
+        discountPaise: 0,
+        payablePaise: 0,
+        validItemCount: 0,
+        invalidItemCount: 0,
+      },
+      valid: true,
+      warnings: [],
+      expiresAt: null,
+      updatedAt: null,
+    },
+  };
+}
+
+async function buildGiftcardCartResponse({ cart, userId }) {
+  const rawItems = Array.isArray(cart?.items) ? cart.items : [];
+  if (!rawItems.length) return buildEmptyGiftcardCartResponse();
+
+  const brandCodes = [...new Set(rawItems.map((item) => normalizeCartBrandCode(item?.brandCode)).filter(Boolean))];
+
+  const brands = brandCodes.length
+    ? await VdBrand.find({ BrandCode: { $in: brandCodes } })
+        .select("BrandCode BrandName Brandtype Category Images Discount customerDiscount minPrice maxPrice DenominationList enabled capping")
+        .lean()
+    : [];
+
+  const brandMap = new Map(brands.map((brand) => [normalizeCartBrandCode(brand.BrandCode), brand]));
+  const monthKey = monthKeyUtc();
+
+  const preparedItems = rawItems.map((item) => {
+    const brandCode = normalizeCartBrandCode(item?.brandCode);
+    const brand = brandMap.get(brandCode);
+    const amount = Number(item?.amount);
+    const qty = sanitizeCartQty(item?.qty, 1);
+    const amountValidation = validateGiftcardCartAmount({ brand, amount });
+    const qtyValid = Number.isInteger(qty) && qty >= 1 && qty <= MAX_GIFTCARD_QTY;
+    const validation = !qtyValid
+      ? { valid: false, code: "INVALID_QTY", message: `Quantity must be between 1 and ${MAX_GIFTCARD_QTY}` }
+      : amountValidation;
+
+    const pricing = brand ? calculateGiftcardCartPricing({ brand, amount, qty }) : null;
+
+    return { item, brand, brandCode, amount, qty, validation, pricing };
+  });
+
+  const usageKeys = [
+    ...new Set(
+      preparedItems
+        .filter((entry) => entry.pricing && (entry.pricing.monthlySpendCapPaise > 0 || entry.pricing.brandKey !== "NORMAL"))
+        .map((entry) => entry.pricing.usageKey)
+        .filter(Boolean),
+    ),
+  ];
+
+  const usageByKey = new Map();
+  for (const usageKey of usageKeys) {
+    usageByKey.set(usageKey, await readMonthlyUsage({ brandKey: usageKey, monthKey, userId }));
+  }
+
+  const plannedSpendByKey = new Map();
+  const plannedDiscountByKey = new Map();
+  const warnings = [];
+
+  let itemCount = 0;
+  let quantity = 0;
+  let mrpPaise = 0;
+  let discountPaiseTotal = 0;
+  let payablePaise = 0;
+  let validItemCount = 0;
+  let invalidItemCount = 0;
+
+  const items = preparedItems.map((entry) => {
+    const { item, brand, brandCode, amount, qty, pricing } = entry;
+    let validation = { ...entry.validation };
+    let discountPaise = Number(pricing?.baseDiscountPaise || 0);
+    let lineMrpPaise = Number(pricing?.totalPaise || 0);
+    let linePayablePaise = Math.max(0, lineMrpPaise - discountPaise);
+
+    const usageKey = pricing?.usageKey || `BRAND:${brandCode}`;
+    const usage = usageByKey.get(usageKey) || { spendPaise: 0, discountPaise: 0, ordersCount: 0 };
+    const previousPlannedSpend = Number(plannedSpendByKey.get(usageKey) || 0);
+    const previousPlannedDiscount = Number(plannedDiscountByKey.get(usageKey) || 0);
+    const currentSpendPaise = Number(usage?.spendPaise || 0);
+    const currentDiscountPaise = Number(usage?.discountPaise || 0);
+    const projectedSpendPaise = currentSpendPaise + previousPlannedSpend + lineMrpPaise;
+    const monthlySpendCapPaise = Number(pricing?.monthlySpendCapPaise || 0);
+
+    if (validation.valid && monthlySpendCapPaise > 0 && projectedSpendPaise > monthlySpendCapPaise) {
+      validation = {
+        valid: false,
+        code: "MONTHLY_CAP_EXCEEDED",
+        message: "Monthly limit exceeded for this brand",
+      };
+    }
+
+    if (validation.valid && pricing?.policy?.monthlyDiscountCapPaise > 0) {
+      const discountCap = Number(pricing.policy.monthlyDiscountCapPaise || 0);
+      const remainingDiscountPaise = Math.max(0, discountCap - currentDiscountPaise - previousPlannedDiscount);
+      if (discountPaise > remainingDiscountPaise) {
+        discountPaise = remainingDiscountPaise;
+        linePayablePaise = Math.max(0, lineMrpPaise - discountPaise);
+        warnings.push({
+          code: "MONTHLY_DISCOUNT_ADJUSTED",
+          brandCode,
+          message: "Discount adjusted because monthly discount cap is nearly used",
+        });
+      }
+    }
+
+    if (validation.valid) {
+      plannedSpendByKey.set(usageKey, previousPlannedSpend + lineMrpPaise);
+      plannedDiscountByKey.set(usageKey, previousPlannedDiscount + discountPaise);
+      validItemCount += 1;
+      quantity += qty;
+      mrpPaise += lineMrpPaise;
+      discountPaiseTotal += discountPaise;
+      payablePaise += linePayablePaise;
+    } else {
+      invalidItemCount += 1;
+    }
+
+    itemCount += 1;
+
+    const { minPrice, maxPrice, denominations } = brand ? resolveAmountBounds(brand) : {};
+
+    return {
+      itemId: item?._id ? String(item._id) : "",
+      brandCode,
+      brandName: brand?.BrandName || "",
+      image: brand?.Images || "",
+      category: brand?.Category || "",
+      brandType: brand?.Brandtype || "",
+      amount,
+      qty,
+      discountPercent: Number(pricing?.discountPercent || 0),
+      mrpPaise: lineMrpPaise,
+      discountPaise: validation.valid ? discountPaise : 0,
+      payablePaise: validation.valid ? linePayablePaise : 0,
+      validation,
+      limits: {
+        minPrice: Number.isFinite(minPrice) ? minPrice : null,
+        maxPrice: Number.isFinite(maxPrice) ? maxPrice : null,
+        denominations: Array.isArray(denominations) ? denominations : [],
+        monthlySpendCapPaise,
+        currentSpendPaise,
+        projectedSpendPaise,
+        remainingSpendPaise: monthlySpendCapPaise > 0 ? Math.max(0, monthlySpendCapPaise - currentSpendPaise - previousPlannedSpend) : 0,
+        monthKey,
+      },
+      addedAt: item?.addedAt || null,
+      updatedAt: item?.updatedAt || null,
+    };
+  });
+
+  return {
+    success: true,
+    cart: {
+      id: cart?._id ? String(cart._id) : "",
+      items,
+      totals: { itemCount, quantity, mrpPaise, discountPaise: discountPaiseTotal, payablePaise, validItemCount, invalidItemCount },
+      valid: invalidItemCount === 0,
+      warnings,
+      expiresAt: cart?.expiresAt || null,
+      updatedAt: cart?.updatedAt || null,
+    },
+  };
+}
+
+function touchGiftcardCart(cart) {
+  cart.expiresAt = new Date(Date.now() + GIFTCARD_CART_TTL_DAYS * 24 * 60 * 60 * 1000);
+}
+
+async function getOrCreateGiftcardCart(userId) {
+  let cart = await GiftcardCart.findOne({ user: userId });
+  if (cart) return cart;
+
+  try {
+    cart = await GiftcardCart.create({ user: userId, items: [] });
+    return cart;
+  } catch (e) {
+    if (String(e?.code) === "11000") return GiftcardCart.findOne({ user: userId });
+    throw e;
+  }
+}
+
+function normalizeCartItemsForSave(items = []) {
+  return items.map((item) => ({
+    _id: item?._id,
+    brandCode: normalizeCartBrandCode(item?.brandCode),
+    amount: Number(item?.amount),
+    qty: sanitizeCartQty(item?.qty, 1),
+    addedAt: item?.addedAt || new Date(),
+    updatedAt: new Date(),
+  }));
+}
+
 function vdUrls() {
   return {
     BRANDS: (
@@ -604,6 +952,250 @@ router.post("/sync", async (req, res) => {
     }
 
     return res.json({ success: true, brandsUpserted, storesUpserted });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+/* -----------------------------
+ * Cart APIs (auth required)
+ * ----------------------------- */
+
+// GET /api/giftcards/cart
+router.get("/cart", auth, async (req, res) => {
+  try {
+    const cart = await GiftcardCart.findOne({ user: req.user?.id }).lean();
+    if (!cart) return res.json(buildEmptyGiftcardCartResponse());
+
+    const response = await buildGiftcardCartResponse({ cart, userId: req.user?.id });
+    return res.json(response);
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// POST /api/giftcards/cart/items
+router.post("/cart/items", auth, async (req, res) => {
+  try {
+    const brandCode = normalizeCartBrandCode(req.body?.brandCode);
+    const amount = Number(req.body?.amount);
+    const qty = sanitizeCartQty(req.body?.qty, 1);
+
+    if (!brandCode) return res.status(400).json({ success: false, message: "brandCode is required" });
+    if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ success: false, message: "Valid amount is required" });
+    if (!Number.isInteger(qty) || qty < 1 || qty > MAX_GIFTCARD_QTY) {
+      return res.status(400).json({ success: false, message: `Quantity must be between 1 and ${MAX_GIFTCARD_QTY}` });
+    }
+
+    const cart = await getOrCreateGiftcardCart(req.user?.id);
+    const currentItems = cart.items.map((item) => item.toObject ? item.toObject() : item);
+    const existing = currentItems.find((item) => normalizeCartBrandCode(item.brandCode) === brandCode && Number(item.amount) === amount);
+
+    if (!existing && currentItems.length >= MAX_GIFTCARD_CART_ITEMS) {
+      return res.status(400).json({ success: false, message: `Cart can contain maximum ${MAX_GIFTCARD_CART_ITEMS} items` });
+    }
+
+    if (existing) {
+      const nextQty = sanitizeCartQty(existing.qty, 1) + qty;
+      if (nextQty > MAX_GIFTCARD_QTY) {
+        return res.status(400).json({ success: false, message: `Max quantity per cart item is ${MAX_GIFTCARD_QTY}` });
+      }
+      existing.qty = nextQty;
+      existing.updatedAt = new Date();
+    } else {
+      currentItems.push({ brandCode, amount, qty, addedAt: new Date(), updatedAt: new Date() });
+    }
+
+    const proposedCart = { ...cart.toObject(), items: currentItems };
+    const proposedResponse = await buildGiftcardCartResponse({ cart: proposedCart, userId: req.user?.id });
+    const invalidItem = proposedResponse.cart.items.find((item) => !item.validation?.valid);
+
+    if (invalidItem) {
+      const status = invalidItem.validation?.code === "MONTHLY_CAP_EXCEEDED" ? 409 : 400;
+      return res.status(status).json({
+        success: false,
+        code: invalidItem.validation?.code,
+        message: invalidItem.validation?.message || "Cart item validation failed",
+        cart: proposedResponse.cart,
+      });
+    }
+
+    cart.items = normalizeCartItemsForSave(currentItems);
+    touchGiftcardCart(cart);
+    await cart.save();
+
+    const response = await buildGiftcardCartResponse({ cart: cart.toObject(), userId: req.user?.id });
+    return res.json(response);
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+
+// POST /api/giftcards/cart/merge
+// Optimized login-sync endpoint. Merges guest/local cart items into the user's DB cart in one request.
+router.post("/cart/merge", auth, async (req, res) => {
+  try {
+    const incomingItems = Array.isArray(req.body?.items) ? req.body.items : [];
+    if (!incomingItems.length) {
+      const cart = await GiftcardCart.findOne({ user: req.user?.id }).lean();
+      if (!cart) return res.json(buildEmptyGiftcardCartResponse());
+      return res.json(await buildGiftcardCartResponse({ cart, userId: req.user?.id }));
+    }
+
+    if (incomingItems.length > MAX_GIFTCARD_CART_ITEMS) {
+      return res.status(400).json({ success: false, message: `Cannot merge more than ${MAX_GIFTCARD_CART_ITEMS} cart items` });
+    }
+
+    const cart = await getOrCreateGiftcardCart(req.user?.id);
+    const currentItems = cart.items.map((item) => item.toObject ? item.toObject() : item);
+
+    for (const incoming of incomingItems) {
+      const brandCode = normalizeCartBrandCode(incoming?.brandCode);
+      const amount = Number(incoming?.amount);
+      const qty = sanitizeCartQty(incoming?.qty, 1);
+
+      if (!brandCode || !Number.isFinite(amount) || amount <= 0) {
+        return res.status(400).json({ success: false, message: "Invalid cart item in merge payload" });
+      }
+      if (!Number.isInteger(qty) || qty < 1 || qty > MAX_GIFTCARD_QTY) {
+        return res.status(400).json({ success: false, message: `Quantity must be between 1 and ${MAX_GIFTCARD_QTY}` });
+      }
+
+      const existing = currentItems.find((item) => normalizeCartBrandCode(item.brandCode) === brandCode && Number(item.amount) === amount);
+      if (existing) {
+        existing.qty = Math.min(MAX_GIFTCARD_QTY, sanitizeCartQty(existing.qty, 1) + qty);
+        existing.updatedAt = new Date();
+      } else {
+        if (currentItems.length >= MAX_GIFTCARD_CART_ITEMS) {
+          return res.status(400).json({ success: false, message: `Cart can contain maximum ${MAX_GIFTCARD_CART_ITEMS} items` });
+        }
+        currentItems.push({ brandCode, amount, qty, addedAt: new Date(), updatedAt: new Date() });
+      }
+    }
+
+    const proposedCart = { ...cart.toObject(), items: currentItems };
+    const proposedResponse = await buildGiftcardCartResponse({ cart: proposedCart, userId: req.user?.id });
+    const invalidItem = proposedResponse.cart.items.find((item) => !item.validation?.valid);
+
+    if (invalidItem) {
+      const status = invalidItem.validation?.code === "MONTHLY_CAP_EXCEEDED" ? 409 : 400;
+      return res.status(status).json({
+        success: false,
+        code: invalidItem.validation?.code,
+        message: invalidItem.validation?.message || "Cart merge validation failed",
+        cart: proposedResponse.cart,
+      });
+    }
+
+    cart.items = normalizeCartItemsForSave(currentItems);
+    touchGiftcardCart(cart);
+    await cart.save();
+
+    const response = await buildGiftcardCartResponse({ cart: cart.toObject(), userId: req.user?.id });
+    return res.json(response);
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// PATCH /api/giftcards/cart/items/:itemId
+router.patch("/cart/items/:itemId", auth, async (req, res) => {
+  try {
+    const cart = await GiftcardCart.findOne({ user: req.user?.id });
+    if (!cart) return res.status(404).json({ success: false, message: "Cart not found" });
+
+    const currentItems = cart.items.map((item) => item.toObject ? item.toObject() : item);
+    const item = currentItems.find((entry) => String(entry?._id || "") === String(req.params.itemId));
+    if (!item) return res.status(404).json({ success: false, message: "Cart item not found" });
+
+    if (req.body?.amount !== undefined) {
+      const amount = Number(req.body.amount);
+      if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ success: false, message: "Valid amount is required" });
+      item.amount = amount;
+    }
+
+    if (req.body?.qty !== undefined) {
+      const qty = sanitizeCartQty(req.body.qty, 1);
+      if (!Number.isInteger(qty) || qty < 1 || qty > MAX_GIFTCARD_QTY) {
+        return res.status(400).json({ success: false, message: `Quantity must be between 1 and ${MAX_GIFTCARD_QTY}` });
+      }
+      item.qty = qty;
+    }
+
+    item.updatedAt = new Date();
+
+    const proposedCart = { ...cart.toObject(), items: currentItems };
+    const proposedResponse = await buildGiftcardCartResponse({ cart: proposedCart, userId: req.user?.id });
+    const updatedItem = proposedResponse.cart.items.find((entry) => String(entry.itemId) === String(req.params.itemId));
+
+    if (updatedItem && !updatedItem.validation?.valid) {
+      const status = updatedItem.validation?.code === "MONTHLY_CAP_EXCEEDED" ? 409 : 400;
+      return res.status(status).json({
+        success: false,
+        code: updatedItem.validation?.code,
+        message: updatedItem.validation?.message || "Cart item validation failed",
+        cart: proposedResponse.cart,
+      });
+    }
+
+    cart.items = normalizeCartItemsForSave(currentItems);
+    touchGiftcardCart(cart);
+    await cart.save();
+
+    const response = await buildGiftcardCartResponse({ cart: cart.toObject(), userId: req.user?.id });
+    return res.json(response);
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// DELETE /api/giftcards/cart/items/:itemId
+router.delete("/cart/items/:itemId", auth, async (req, res) => {
+  try {
+    const cart = await GiftcardCart.findOne({ user: req.user?.id });
+    if (!cart) return res.json(buildEmptyGiftcardCartResponse());
+
+    const before = cart.items.length;
+    cart.items = cart.items.filter((item) => String(item?._id || "") !== String(req.params.itemId));
+
+    if (cart.items.length === before) {
+      return res.status(404).json({ success: false, message: "Cart item not found" });
+    }
+
+    if (!cart.items.length) {
+      await GiftcardCart.deleteOne({ _id: cart._id, user: req.user?.id });
+      return res.json(buildEmptyGiftcardCartResponse());
+    }
+
+    touchGiftcardCart(cart);
+    await cart.save();
+
+    const response = await buildGiftcardCartResponse({ cart: cart.toObject(), userId: req.user?.id });
+    return res.json(response);
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// DELETE /api/giftcards/cart
+router.delete("/cart", auth, async (req, res) => {
+  try {
+    await GiftcardCart.deleteOne({ user: req.user?.id });
+    return res.json(buildEmptyGiftcardCartResponse());
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// POST /api/giftcards/cart/validate
+router.post("/cart/validate", auth, async (req, res) => {
+  try {
+    const cart = await GiftcardCart.findOne({ user: req.user?.id }).lean();
+    if (!cart) return res.json(buildEmptyGiftcardCartResponse());
+
+    const response = await buildGiftcardCartResponse({ cart, userId: req.user?.id });
+    return res.status(response.cart.valid ? 200 : 409).json(response);
   } catch (e) {
     return res.status(500).json({ success: false, message: e.message });
   }
