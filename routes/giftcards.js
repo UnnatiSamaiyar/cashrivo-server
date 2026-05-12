@@ -663,6 +663,309 @@ async function getOrCreateGiftcardCart(userId) {
   }
 }
 
+
+function makeHttpError(status, message, extra = {}) {
+  const err = new Error(message || "Request failed");
+  err.status = status || 500;
+  Object.assign(err, extra || {});
+  return err;
+}
+
+function normalizeGiftcardOrderItems(body = {}) {
+  const source = Array.isArray(body?.items)
+    ? body.items
+    : Array.isArray(body?.cartItems)
+      ? body.cartItems
+      : [];
+
+  return source.map((item) => ({
+    brandCode: normalizeCartBrandCode(item?.brandCode || item?.BrandCode),
+    amount: Number(item?.amount || item?.denomination || 0),
+    qty: sanitizeCartQty(item?.qty || item?.quantity || 1, 1),
+  }));
+}
+
+async function buildGiftcardOrderQuotes({ items, userId }) {
+  if (!Array.isArray(items) || !items.length) {
+    throw makeHttpError(400, "Cart items are required");
+  }
+
+  if (items.length > MAX_GIFTCARD_CART_ITEMS) {
+    throw makeHttpError(400, `Cart checkout can contain maximum ${MAX_GIFTCARD_CART_ITEMS} items`);
+  }
+
+  const invalidLine = items.find((item) => !item.brandCode || !Number.isFinite(item.amount) || item.amount <= 0 || !Number.isInteger(item.qty) || item.qty < 1);
+  if (invalidLine) {
+    throw makeHttpError(400, "Invalid cart item in checkout");
+  }
+
+  const overQty = items.find((item) => item.qty > MAX_GIFTCARD_QTY);
+  if (overQty) {
+    throw makeHttpError(400, `Max quantity per order is ${MAX_GIFTCARD_QTY}`);
+  }
+
+  const brandCodes = [...new Set(items.map((item) => item.brandCode).filter(Boolean))];
+  const brands = await VdBrand.find({ BrandCode: { $in: brandCodes }, enabled: { $ne: false } })
+    .select("BrandCode BrandName Brandtype Category Images Discount customerDiscount minPrice maxPrice DenominationList enabled capping")
+    .lean();
+  const brandMap = new Map(brands.map((brand) => [normalizeCartBrandCode(brand.BrandCode), brand]));
+
+  const monthKey = monthKeyUtc();
+  const usageByKey = new Map();
+  const plannedSpendByKey = new Map();
+  const plannedDiscountByKey = new Map();
+  const quotes = [];
+
+  for (const line of items) {
+    const brand = brandMap.get(line.brandCode);
+    if (!brand) {
+      throw makeHttpError(404, `Gift card brand not found: ${line.brandCode}`);
+    }
+
+    const amountValidation = validateGiftcardCartAmount({ brand, amount: line.amount });
+    if (!amountValidation.valid) {
+      throw makeHttpError(400, amountValidation.message || "Invalid cart item amount", { code: amountValidation.code });
+    }
+
+    const pricing = calculateGiftcardCartPricing({ brand, amount: line.amount, qty: line.qty });
+    const usageKey = pricing.usageKey || `BRAND:${line.brandCode}`;
+
+    if (!usageByKey.has(usageKey)) {
+      usageByKey.set(usageKey, await readMonthlyUsage({ brandKey: usageKey, monthKey, userId }));
+    }
+
+    const usage = usageByKey.get(usageKey) || { spendPaise: 0, discountPaise: 0, ordersCount: 0 };
+    const previousPlannedSpend = Number(plannedSpendByKey.get(usageKey) || 0);
+    const previousPlannedDiscount = Number(plannedDiscountByKey.get(usageKey) || 0);
+    const currentSpendPaise = Number(usage?.spendPaise || 0);
+    const currentDiscountPaise = Number(usage?.discountPaise || 0);
+    const totalPaise = Number(pricing.totalPaise || 0);
+    let discountPaise = Number(pricing.baseDiscountPaise || 0);
+    const monthlySpendCapPaise = Number(pricing.monthlySpendCapPaise || 0);
+
+    const projectedSpendPaise = currentSpendPaise + previousPlannedSpend + totalPaise;
+    if (monthlySpendCapPaise > 0 && projectedSpendPaise > monthlySpendCapPaise) {
+      throw makeHttpError(409, "Monthly limit exceeded for this brand", {
+        code: "MONTHLY_CAP_EXCEEDED",
+        meta: {
+          brandCode: line.brandCode,
+          capPaise: monthlySpendCapPaise,
+          currentPaise: currentSpendPaise,
+          projectedPaise: projectedSpendPaise,
+        },
+      });
+    }
+
+    if (pricing?.policy?.monthlyDiscountCapPaise > 0) {
+      const discountCap = Number(pricing.policy.monthlyDiscountCapPaise || 0);
+      const remainingDiscountPaise = Math.max(0, discountCap - currentDiscountPaise - previousPlannedDiscount);
+      if (discountPaise > remainingDiscountPaise) discountPaise = remainingDiscountPaise;
+    }
+
+    const payablePaise = Math.max(100, totalPaise - discountPaise);
+
+    plannedSpendByKey.set(usageKey, previousPlannedSpend + totalPaise);
+    plannedDiscountByKey.set(usageKey, previousPlannedDiscount + discountPaise);
+
+    quotes.push({
+      brand,
+      brandCode: brand.BrandCode,
+      amount: Number(line.amount),
+      qty: Number(line.qty),
+      totalPaise,
+      discountPaise,
+      payablePaise,
+      policy: {
+        brandKey: pricing.brandKey,
+        usageKey,
+        monthKey,
+        spendPaise: totalPaise,
+        discountPaise,
+        monthlySpendCapPaise,
+      },
+      upiOnly: !!pricing?.policy?.upiOnly,
+    });
+  }
+
+  return quotes;
+}
+
+async function createBulkGiftcardOrder({ req, res }) {
+  let purchases = [];
+  let debugStep = "bulk-init";
+
+  const fail = (status, payload) => res.status(status || 500).json(payload);
+
+  try {
+    const items = normalizeGiftcardOrderItems(req.body || {});
+    debugStep = "bulk-quote";
+    const quotes = await buildGiftcardOrderQuotes({ items, userId: req.user?.id });
+
+    const giftPurchaseContract = normalizeGiftPurchaseContract(req.body || {});
+    try {
+      assertGiftPurchaseContract(giftPurchaseContract);
+    } catch (contractErr) {
+      return fail(400, { success: false, message: contractErr.message });
+    }
+
+    debugStep = "bulk-user-load";
+    const userDoc = await User.findById(req.user?.id)
+      .select("name email phone address city state pincode")
+      .lean();
+
+    const buyerSnapshot = {
+      name: userDoc?.name || "",
+      email: userDoc?.email || req.user?.email || "",
+      mobile: userDoc?.phone || "",
+      address: userDoc?.address || "",
+      city: userDoc?.city || "",
+      state: userDoc?.state || "",
+      pincode: userDoc?.pincode || "",
+    };
+
+    const groupId = `GC_CART_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const totalPayablePaise = quotes.reduce((sum, q) => sum + Number(q.payablePaise || 0), 0);
+    const totalMrpPaise = quotes.reduce((sum, q) => sum + Number(q.totalPaise || 0), 0);
+    const totalDiscountPaise = quotes.reduce((sum, q) => sum + Number(q.discountPaise || 0), 0);
+
+    if (!Number.isFinite(totalPayablePaise) || totalPayablePaise <= 0) {
+      return fail(400, { success: false, message: "Invalid cart payable total" });
+    }
+
+    debugStep = "bulk-purchase-create";
+    purchases = await GiftcardPurchase.insertMany(
+      quotes.map((quote) => ({
+        user: req.user?.id || null,
+        groupId,
+        brandCode: quote.brandCode,
+        brandName: quote.brand.BrandName || "",
+        amount: quote.amount,
+        qty: quote.qty,
+        totalAmount: Number((quote.payablePaise / 100).toFixed(2)),
+        buyer: buyerSnapshot,
+        purchase_type: giftPurchaseContract.purchase_type,
+        recipient: giftPurchaseContract.recipient,
+        delivery: giftPurchaseContract.delivery,
+        status: "PENDING_PAYMENT",
+        policy: quote.policy,
+      })),
+    );
+
+    const purchaseIds = purchases.map((purchase) => String(purchase._id));
+
+    if (isPaymentTest()) {
+      debugStep = "bulk-test-token-create";
+      const token = sha256Hex(`TESTPAY|${groupId}|${Date.now()}|${Math.random()}`);
+      await GiftcardPurchase.updateMany(
+        { _id: { $in: purchaseIds } },
+        { $set: { testPayment: { token } } },
+      );
+
+      return res.json({
+        success: true,
+        testMode: true,
+        cartCheckout: true,
+        groupId,
+        purchaseId: purchaseIds[0] || "",
+        purchaseIds,
+        testPaymentToken: token,
+        payableAmount: totalPayablePaise / 100,
+        totals: { mrpPaise: totalMrpPaise, discountPaise: totalDiscountPaise, payablePaise: totalPayablePaise },
+        policy: { upiOnly: quotes.some((quote) => quote.upiOnly) },
+      });
+    }
+
+    const contact = safeMobile(userDoc?.phone || req.user?.phone || req.body?.buyer?.mobile || req.body?.mobile || req.body?.phone || "");
+    if (!contact) {
+      return fail(400, { success: false, message: "User phone is required before creating payment order" });
+    }
+
+    const razorpayOrderPayload = {
+      amount: totalPayablePaise,
+      currency: "INR",
+      receipt: `GC_CART_${String(Date.now()).slice(-10)}_${String(purchases.length).slice(0, 4)}`,
+      customer_details: {
+        name: String(userDoc?.name || req.user?.name || "Customer").trim() || "Customer",
+        contact,
+      },
+      notes: {
+        groupId,
+        cartCheckout: "true",
+        itemCount: String(purchases.length),
+        purchaseIds: purchaseIds.join(",").slice(0, 450),
+      },
+    };
+
+    debugStep = "bulk-razorpay-order-create";
+    let order;
+    try {
+      order = await razorpay.orders.create(razorpayOrderPayload);
+    } catch (err) {
+      await GiftcardPurchase.updateMany(
+        { _id: { $in: purchaseIds } },
+        {
+          $set: {
+            "emailDelivery.error": JSON.stringify({
+              stage: "bulk-razorpay-order-create",
+              message: err?.message || "Razorpay order creation failed",
+              error: err?.error || null,
+              statusCode: err?.statusCode || null,
+              at: new Date().toISOString(),
+            }),
+          },
+        },
+      );
+      console.error("[giftcards/order] bulk razorpay.orders.create failed", {
+        message: err?.message,
+        error: err?.error,
+        statusCode: err?.statusCode,
+        groupId,
+        purchaseIds,
+      });
+      return fail(500, {
+        success: false,
+        message: err?.message || err?.error?.description || "Cart order creation failed",
+        debug: { step: debugStep, groupId, purchaseIds },
+        providerError: err?.error || err?.response?.data || null,
+      });
+    }
+
+    debugStep = "bulk-purchase-update-razorpay";
+    await GiftcardPurchase.updateMany(
+      { _id: { $in: purchaseIds } },
+      { $set: { razorpay: { order_id: order.id } } },
+    );
+
+    return res.json({
+      success: true,
+      cartCheckout: true,
+      key_id,
+      order,
+      groupId,
+      purchaseId: purchaseIds[0] || "",
+      purchaseIds,
+      totals: { mrpPaise: totalMrpPaise, discountPaise: totalDiscountPaise, payablePaise: totalPayablePaise },
+      policy: { upiOnly: quotes.some((quote) => quote.upiOnly) },
+    });
+  } catch (e) {
+    console.error("[giftcards/order] bulk failed", {
+      message: e?.message,
+      code: e?.code,
+      status: e?.status,
+      debugStep,
+      purchaseIds: Array.isArray(purchases) ? purchases.map((p) => String(p?._id || "")).filter(Boolean) : [],
+    });
+
+    return fail(Number(e?.status || 500), {
+      success: false,
+      code: e?.code || undefined,
+      message: e?.message || "Cart order creation failed",
+      debug: { step: debugStep },
+      meta: e?.meta || undefined,
+    });
+  }
+}
+
 function normalizeCartItemsForSave(items = []) {
   return items.map((item) => ({
     _id: item?._id,
@@ -1235,6 +1538,11 @@ router.post("/order", auth, async (req, res) => {
         message: "Razorpay keys missing",
         debug: { step: debugStep, keyIdPresent: !!key_id, keySecretPresent: !!key_secret },
       });
+    }
+
+    const bulkItems = normalizeGiftcardOrderItems(req.body || {});
+    if (bulkItems.length > 0) {
+      return createBulkGiftcardOrder({ req, res });
     }
 
     const { brandCode, amount, qty } = req.body || {};
