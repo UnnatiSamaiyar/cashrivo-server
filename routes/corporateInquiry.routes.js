@@ -1,4 +1,5 @@
 const express = require("express");
+const mongoose = require("mongoose");
 const nodemailer = require("nodemailer");
 const CorporateInquiry = require("../models/CorporateInquiry");
 
@@ -27,6 +28,10 @@ function escapeHtml(value) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
+}
+
+function isValidObjectId(id) {
+  return mongoose.Types.ObjectId.isValid(id);
 }
 
 function validatePayload(body) {
@@ -67,6 +72,10 @@ function validatePayload(body) {
 
   if (payload.useCase === "Others" && !payload.otherRequirement) {
     errors.otherRequirement = "Please specify your requirement.";
+  }
+
+  if (payload.useCase !== "Others") {
+    payload.otherRequirement = "";
   }
 
   return { payload, errors };
@@ -165,6 +174,116 @@ function buildMail(inquiry) {
   return { subject, html, text };
 }
 
+/**
+ * GET all corporate enquiries
+ * Supports:
+ * ?page=1
+ * ?limit=20
+ * ?q=company/email/name/phone/location
+ * ?mailStatus=pending/sent/failed
+ * ?useCase=Employee Gifting
+ */
+router.get("/corporate-orders", async (req, res) => {
+  try {
+    const page = Math.max(Number(req.query.page) || 1, 1);
+    const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
+    const skip = (page - 1) * limit;
+
+    const q = clean(req.query.q);
+    const mailStatus = clean(req.query.mailStatus);
+    const useCase = clean(req.query.useCase);
+
+    const filter = {};
+
+    if (mailStatus) {
+      filter.mailStatus = mailStatus;
+    }
+
+    if (useCase) {
+      filter.useCase = useCase;
+    }
+
+    if (q) {
+      const regex = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+
+      filter.$or = [
+        { companyName: regex },
+        { firstName: regex },
+        { lastName: regex },
+        { corporateEmail: regex },
+        { phoneNumber: regex },
+        { location: regex },
+        { useCase: regex },
+      ];
+    }
+
+    const [items, total] = await Promise.all([
+      CorporateInquiry.find(filter)
+        .sort({ createdAt: -1, _id: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      CorporateInquiry.countDocuments(filter),
+    ]);
+
+    return res.status(200).json({
+      success: true,
+      message: "Corporate enquiries fetched successfully.",
+      data: items,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: "Unable to fetch corporate enquiries.",
+    });
+  }
+});
+
+/**
+ * GET single corporate enquiry by ID
+ */
+router.get("/corporate-orders/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid enquiry ID.",
+      });
+    }
+
+    const inquiry = await CorporateInquiry.findById(id).lean();
+
+    if (!inquiry) {
+      return res.status(404).json({
+        success: false,
+        message: "Corporate enquiry not found.",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Corporate enquiry fetched successfully.",
+      data: inquiry,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: "Unable to fetch corporate enquiry.",
+    });
+  }
+});
+
+/**
+ * CREATE corporate enquiry
+ */
 router.post("/corporate-orders", async (req, res) => {
   try {
     const { payload, errors } = validatePayload(req.body || {});
@@ -225,4 +344,121 @@ router.post("/corporate-orders", async (req, res) => {
   }
 });
 
-module.exports = router;
+/**
+ * UPDATE corporate enquiry by ID
+ * Partial update supported.
+ */
+router.patch("/corporate-orders/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid enquiry ID.",
+      });
+    }
+
+    const inquiry = await CorporateInquiry.findById(id);
+
+    if (!inquiry) {
+      return res.status(404).json({
+        success: false,
+        message: "Corporate enquiry not found.",
+      });
+    }
+
+    const allowedFields = [
+      "companyName",
+      "firstName",
+      "lastName",
+      "corporateEmail",
+      "phoneNumber",
+      "location",
+      "useCase",
+      "otherRequirement",
+    ];
+
+    const updateBody = {};
+
+    allowedFields.forEach((field) => {
+      if (Object.prototype.hasOwnProperty.call(req.body || {}, field)) {
+        updateBody[field] = req.body[field];
+      }
+    });
+
+    const mergedBody = {
+      companyName: inquiry.companyName,
+      firstName: inquiry.firstName,
+      lastName: inquiry.lastName,
+      corporateEmail: inquiry.corporateEmail,
+      phoneNumber: inquiry.phoneNumber,
+      location: inquiry.location,
+      useCase: inquiry.useCase,
+      otherRequirement: inquiry.otherRequirement,
+      ...updateBody,
+    };
+
+    const { payload, errors } = validatePayload(mergedBody);
+
+    if (Object.keys(errors).length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Validation failed.",
+        errors,
+      });
+    }
+
+    inquiry.set(payload);
+    await inquiry.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Corporate enquiry updated successfully.",
+      data: inquiry,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: "Unable to update corporate enquiry.",
+    });
+  }
+});
+
+/**
+ * DELETE corporate enquiry by ID
+ */
+router.delete("/corporate-orders/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid enquiry ID.",
+      });
+    }
+
+    const deletedInquiry = await CorporateInquiry.findByIdAndDelete(id);
+
+    if (!deletedInquiry) {
+      return res.status(404).json({
+        success: false,
+        message: "Corporate enquiry not found.",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Corporate enquiry deleted successfully.",
+      deletedId: deletedInquiry._id,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: "Unable to delete corporate enquiry.",
+    });
+  }
+});
+
+module.exports = router;  
