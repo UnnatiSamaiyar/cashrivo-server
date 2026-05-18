@@ -26,7 +26,8 @@ function resolveChannel(recipient) {
 }
 
 function normalizeGiftPurchaseContract(body = {}) {
-  const rawType = clean(body.purchase_type || body.purchaseType || "SELF", 16).toUpperCase();
+  const inferredType = body.recipient && typeof body.recipient === "object" ? "GIFT" : "SELF";
+  const rawType = clean(body.purchase_type || body.purchaseType || inferredType, 16).toUpperCase();
   const purchase_type = PURCHASE_TYPES.has(rawType) ? rawType : "SELF";
 
   if (purchase_type !== "GIFT") {
@@ -68,20 +69,45 @@ function normalizeGiftPurchaseContract(body = {}) {
   };
 }
 
+function hasGiftPurchaseContractPayload(body = {}) {
+  return Object.prototype.hasOwnProperty.call(body, "purchase_type") ||
+    Object.prototype.hasOwnProperty.call(body, "purchaseType") ||
+    Object.prototype.hasOwnProperty.call(body, "recipient") ||
+    Object.prototype.hasOwnProperty.call(body, "delivery");
+}
+
+function normalizeStoredGiftPurchaseContract(purchase = {}) {
+  const rawType = clean(purchase.purchase_type || purchase.purchaseType || "SELF", 16).toUpperCase();
+  const purchase_type = PURCHASE_TYPES.has(rawType) ? rawType : "SELF";
+
+  if (purchase_type !== "GIFT") {
+    return normalizeGiftPurchaseContract({ purchase_type: "SELF" });
+  }
+
+  return normalizeGiftPurchaseContract({
+    purchase_type: "GIFT",
+    recipient: purchase.recipient || {},
+    delivery: purchase.delivery || {},
+  });
+}
+
 function assertGiftPurchaseContract(contract) {
   if (!contract || contract.purchase_type !== "GIFT") return;
   const recipient = contract.recipient || {};
   if (!recipient.name) throw new Error("Recipient name is required");
-  if (!recipient.email && !recipient.mobile) throw new Error("Recipient email or mobile is required");
-  if (recipient.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipient.email)) {
+  if (!recipient.email) throw new Error("Recipient email is required");
+  if (!recipient.mobile) throw new Error("Recipient phone number is required");
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipient.email)) {
     throw new Error("Valid recipient email is required");
   }
-  if (recipient.mobile && recipient.mobile.replace(/\D/g, "").length < 10) {
+  if (recipient.mobile.replace(/\D/g, "").length < 10) {
     throw new Error("Valid recipient mobile is required");
   }
 }
 
 module.exports = {
   normalizeGiftPurchaseContract,
+  normalizeStoredGiftPurchaseContract,
+  hasGiftPurchaseContractPayload,
   assertGiftPurchaseContract,
 };
