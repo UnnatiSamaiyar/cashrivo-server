@@ -22,8 +22,13 @@ const { getVdToken } = require("../services/vdTokenCache");
 const { vdEncryptBase64 } = require("../utils/vdEncrypt");
 const { vdDecryptBase64, safeJsonParse } = require("../utils/vdCrypto");
 const { encryptJson, decryptJson } = require("../utils/secretBox");
-const { sendMail } = require("../services/mailer");
-const { normalizeGiftPurchaseContract, assertGiftPurchaseContract } = require("../utils/giftPurchaseContract");
+const { sendGiftcardSuccessEmails } = require("../services/giftcardGiftDelivery");
+const {
+  normalizeGiftPurchaseContract,
+  normalizeStoredGiftPurchaseContract,
+  hasGiftPurchaseContractPayload,
+  assertGiftPurchaseContract,
+} = require("../utils/giftPurchaseContract");
 
 const router = express.Router();
 
@@ -160,6 +165,55 @@ function maskVouchers(vouchers) {
     return { available: true };
   }
 }
+
+function buildPurchaseDisplayMeta(order = {}) {
+  const purchaseType = String(order.purchase_type || order.purchaseType || "SELF").toUpperCase() === "GIFT" ? "GIFT" : "SELF";
+
+  if (purchaseType !== "GIFT") {
+    return {
+      purchase_type: "SELF",
+      purchaseType: "SELF",
+      purchaseLabel: "Purchased for yourself",
+      purchaseForLabel: "Purchased for yourself",
+      purchaseForText: "Purchased for yourself",
+      giftedTo: null,
+    };
+  }
+
+  const recipient = order.recipient && typeof order.recipient === "object" ? order.recipient : {};
+  const recipientSummary = {
+    name: String(recipient.name || "").trim(),
+    email: String(recipient.email || "").trim(),
+    mobile: String(recipient.mobile || "").trim(),
+  };
+
+  const labelTarget = recipientSummary.name || recipientSummary.email || recipientSummary.mobile || "Recipient";
+  const parts = [recipientSummary.name, recipientSummary.email, recipientSummary.mobile].filter(Boolean);
+
+  return {
+    purchase_type: "GIFT",
+    purchaseType: "GIFT",
+    recipient: {
+      ...(recipient || {}),
+      ...recipientSummary,
+    },
+    recipientSummary,
+    purchaseLabel: `Gifted to: ${labelTarget}`,
+    purchaseForLabel: "Gifted to",
+    purchaseForText: parts.length ? `Gifted to: ${parts.join(" | ")}` : "Gifted to recipient",
+    giftedTo: recipientSummary,
+  };
+}
+
+function serializePurchaseForOrderHistory(order = {}) {
+  return {
+    ...order,
+    ...buildPurchaseDisplayMeta(order),
+    vouchers: order.vouchers_masked || null,
+    vouchers_enc: undefined,
+  };
+}
+
 
 function splitName(fullName) {
   const n = String(fullName || "").trim();
@@ -1140,6 +1194,47 @@ function buildGiftCardEmailHtml({ brandName, totalAmount, orderId, vouchers }) {
   </div>`;
 }
 
+async function deliverGiftcardSuccessEmail({ purchase, buyerEmail, vouchers, isTest = false }) {
+  const result = await sendGiftcardSuccessEmails({
+    purchase,
+    buyerEmail: buyerEmail || purchase?.buyer?.email || "",
+    vouchers,
+    isTest,
+  });
+
+  purchase.emailDelivery = result.buyer || {
+    sent: false,
+    to: buyerEmail || purchase?.buyer?.email || "",
+    messageId: "",
+    error: "Buyer email delivery failed",
+    sentAt: null,
+  };
+
+  purchase.recipientEmailDelivery = result.recipient || {
+    sent: false,
+    to: "",
+    messageId: "",
+    error: "NOT_REQUIRED",
+    sentAt: null,
+  };
+
+  if (String(purchase.purchase_type || "SELF").toUpperCase() === "GIFT") {
+    const currentDelivery = purchase.delivery && typeof purchase.delivery.toObject === "function"
+      ? purchase.delivery.toObject()
+      : (purchase.delivery || {});
+
+    purchase.delivery = {
+      mode: currentDelivery.mode || "INSTANT",
+      scheduled_at: currentDelivery.scheduled_at || null,
+      channel: currentDelivery.channel || "EMAIL_AND_MOBILE",
+      status: result.recipient?.sent ? "SENT" : "FAILED",
+    };
+  }
+
+  await purchase.save();
+  return result;
+}
+
 /* -----------------------------
  * Catalog APIs
  * ----------------------------- */
@@ -1818,7 +1913,8 @@ router.post("/verify", auth, async (req, res) => {
 
     const purchaseId = body.purchaseId;
     const buyer = body.buyer;
-    const giftPurchaseContract = normalizeGiftPurchaseContract(body);
+    const shouldUpdateGiftContract = hasGiftPurchaseContractPayload(body);
+    let giftPurchaseContract = null;
 
     // TEST mode verification (no real money)
     const testPaymentToken = body.testPaymentToken;
@@ -1882,12 +1978,20 @@ router.post("/verify", auth, async (req, res) => {
       purchase.buyer = { ...purchase.buyer, ...buyer };
     }
 
-    // Persist gift/self contract snapshot. No delivery is triggered in Phase 3.
+    // Persist gift/self contract snapshot only when verify payload explicitly sends it.
+    // If verify is called with the old frontend payload, keep the contract saved during /order.
     try {
+      giftPurchaseContract = shouldUpdateGiftContract
+        ? normalizeGiftPurchaseContract(body)
+        : normalizeStoredGiftPurchaseContract(purchase);
+
       assertGiftPurchaseContract(giftPurchaseContract);
-      purchase.purchase_type = giftPurchaseContract.purchase_type;
-      purchase.recipient = giftPurchaseContract.recipient;
-      purchase.delivery = giftPurchaseContract.delivery;
+
+      if (shouldUpdateGiftContract) {
+        purchase.purchase_type = giftPurchaseContract.purchase_type;
+        purchase.recipient = giftPurchaseContract.recipient;
+        purchase.delivery = giftPurchaseContract.delivery;
+      }
     } catch (contractErr) {
       return res.status(400).json({ success: false, message: contractErr.message });
     }
@@ -2112,40 +2216,13 @@ router.post("/verify", auth, async (req, res) => {
 
       await purchase.save();
 
-      // Email best-effort
-      try {
-        const to = buyerEmail;
-        const subject = `Your Cashrivo Gift Card (TEST) - ${purchase.brandName}`;
-        const html = buildGiftCardEmailHtml({
-          brandName: purchase.brandName,
-          totalAmount: purchase.totalAmount,
-          orderId: purchase._id,
-          vouchers,
-        });
-        const info = await sendMail({
-          to,
-          subject,
-          html,
-          text: "Your test gift card is ready. Please login to Cashrivo to view.",
-        });
-        purchase.emailDelivery = {
-          sent: true,
-          to,
-          messageId: String(info?.messageId || ""),
-          error: "",
-          sentAt: new Date(),
-        };
-        await purchase.save();
-      } catch (e) {
-        purchase.emailDelivery = {
-          sent: false,
-          to: buyerEmail,
-          messageId: "",
-          error: String(e?.message || e),
-          sentAt: null,
-        };
-        await purchase.save();
-      }
+      // Buyer + gift recipient email delivery (best-effort)
+      await deliverGiftcardSuccessEmail({
+        purchase,
+        buyerEmail,
+        vouchers,
+        isTest: true,
+      });
       const rivo = await awardRivoPointsForPurchase({ userId: req.user?.id, purchase });
       return res.json({
         success: true,
@@ -2282,40 +2359,13 @@ router.post("/verify", auth, async (req, res) => {
 
           await purchase.save();
 
-          // Email delivery (best-effort)
-          try {
-            const to = buyerEmail;
-            const subject = `Your Cashrivo Gift Card (TEST) - ${purchase.brandName}`;
-            const html = buildGiftCardEmailHtml({
-              brandName: purchase.brandName,
-              totalAmount: purchase.totalAmount,
-              orderId: purchase._id,
-              vouchers,
-            });
-            const info = await sendMail({
-              to,
-              subject,
-              html,
-              text: "Your test gift card is ready. Please login to Cashrivo to view.",
-            });
-            purchase.emailDelivery = {
-              sent: true,
-              to,
-              messageId: String(info?.messageId || ""),
-              error: "",
-              sentAt: new Date(),
-            };
-            await purchase.save();
-          } catch (e) {
-            purchase.emailDelivery = {
-              sent: false,
-              to: buyerEmail,
-              messageId: "",
-              error: String(e?.message || e),
-              sentAt: null,
-            };
-            await purchase.save();
-          }
+          // Buyer + gift recipient email delivery (best-effort)
+          await deliverGiftcardSuccessEmail({
+            purchase,
+            buyerEmail,
+            vouchers,
+            isTest: true,
+          });
 
           const rivo = await awardRivoPointsForPurchase({ userId: req.user?.id, purchase });
 
@@ -2401,42 +2451,13 @@ router.post("/verify", auth, async (req, res) => {
 
     
 
-    // Email delivery (best-effort)
-    try {
-      const to = buyerEmail;
-      const subject = `Your Cashrivo Gift Card - ${purchase.brandName}`;
-      const html = buildGiftCardEmailHtml({
-        brandName: purchase.brandName,
-        totalAmount: purchase.totalAmount,
-        orderId: purchase._id,
-        vouchers,
-      });
-
-      const info = await sendMail({
-        to,
-        subject,
-        html,
-        text: "Your gift card is ready. Please login to Cashrivo to view.",
-      });
-
-      purchase.emailDelivery = {
-        sent: true,
-        to,
-        messageId: String(info?.messageId || ""),
-        error: "",
-        sentAt: new Date(),
-      };
-      await purchase.save();
-    } catch (e) {
-      purchase.emailDelivery = {
-        sent: false,
-        to: buyerEmail,
-        messageId: "",
-        error: String(e?.message || e),
-        sentAt: null,
-      };
-      await purchase.save();
-    }
+    // Buyer + gift recipient email delivery (best-effort)
+    await deliverGiftcardSuccessEmail({
+      purchase,
+      buyerEmail,
+      vouchers,
+      isTest: false,
+    });
 
     const rivo = await awardRivoPointsForPurchase({ userId: req.user?.id, purchase });
 
@@ -2541,11 +2562,7 @@ router.get("/my-orders", auth, async (req, res) => {
       .limit(limit)
       .lean();
 
-    const safeItems = items.map((o) => ({
-      ...o,
-      vouchers: o.vouchers_masked || null,
-      vouchers_enc: undefined,
-    }));
+    const safeItems = items.map((o) => serializePurchaseForOrderHistory(o));
 
     return res.json({
       success: true,
@@ -2603,6 +2620,7 @@ router.get("/order/:id", auth, async (req, res) => {
 
     const safeOrder = {
       ...order,
+      ...buildPurchaseDisplayMeta(order),
       vouchers_enc: undefined,
       vouchers: normalizedDecrypted || order?.vouchers_masked || null,
       vdDecrypted: normalizedDecrypted,

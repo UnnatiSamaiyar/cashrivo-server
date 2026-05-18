@@ -28,7 +28,7 @@ const GiftDeliverySchema = new mongoose.Schema(
     mode: { type: String, enum: ["INSTANT", "SCHEDULED"], default: "INSTANT" },
     scheduled_at: { type: Date, default: null },
     channel: { type: String, enum: ["EMAIL", "MOBILE", "EMAIL_AND_MOBILE", "SELF"], default: "SELF" },
-    status: { type: String, enum: ["NOT_REQUIRED", "PENDING", "STORED"], default: "NOT_REQUIRED" },
+    status: { type: String, enum: ["NOT_REQUIRED", "PENDING", "STORED", "SENT", "FAILED"], default: "NOT_REQUIRED" },
   },
   { _id: false }
 );
@@ -100,6 +100,14 @@ const GiftcardPurchaseSchema = new mongoose.Schema(
     vouchers_masked: { type: mongoose.Schema.Types.Mixed, default: null },
 
     emailDelivery: {
+      sent: { type: Boolean, default: false },
+      to: { type: String, default: "" },
+      messageId: { type: String, default: "" },
+      error: { type: String, default: "" },
+      sentAt: { type: Date, default: null },
+    },
+
+    recipientEmailDelivery: {
       sent: { type: Boolean, default: false },
       to: { type: String, default: "" },
       messageId: { type: String, default: "" },
